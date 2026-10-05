@@ -93,8 +93,8 @@ static uint8_t activeAlerts() {
 
 // ---- header / nav ----------------------------------------------------------
 static void drawHeader(Canvas& c) {
-  drawSpark(c, 20, 15, 11, CLAY, BG);
-  c.text(F_SERIF12, IVORY, "Claude", 38, 22);
+  drawMark(c, 20, 15, 11, ACCENT, BG);
+  c.text(F_BRAND, IVORY, BRAND_NAME, 38, 22);
 
   const char* label;
   uint16_t dot;
@@ -129,18 +129,18 @@ static void drawNav(Canvas& c) {
   }
 
   if (autoActive) {
-    c.text(F_SANS9, CLAY, "auto", 160, 237, BC_DATUM);
+    c.text(F_SANS9, ACCENT, "auto", 160, 237, BC_DATUM);
   } else {
     for (int i = 0; i < NAV_PAGES; i++) {
       int x = 160 + (2 * i - (NAV_PAGES - 1)) * 7;
-      c.circle(x, 231, i == (int)page ? 4 : 3, i == (int)page ? CLAY : TRACK);
+      c.circle(x, 231, i == (int)page ? 4 : 3, i == (int)page ? ACCENT : TRACK);
     }
   }
   if (g_data.model[0]) c.text(F_SANS9, DIM, g_data.model, 310, 237, BR_DATUM);
 }
 
 static void drawNoLink(Canvas& c) {
-  drawSpark(c, 160, 84, 30, CLAY, BG);
+  drawMark(c, 160, 84, 30, ACCENT, BG);
   c.text(F_SANSB18, IVORY, "Waiting for bridge", 160, 150, BC_DATUM);
   c.text(F_SANS9, DIM, "run host/install.sh on the Mac", 160, 176, BC_DATUM);
 }
@@ -164,8 +164,11 @@ static void drawBtn(Canvas& c, const Rect& r, const char* t, uint16_t fill = CAR
 }
 
 static void drawSettings(Canvas& c) {
-  drawSpark(c, 24, 25, 12, CLAY, BG);
+  drawMark(c, 24, 25, 12, ACCENT, BG);
   c.text(F_SANSB18, IVORY, "Settings", 44, 37);
+#ifdef BRAND_CLAUDE
+  c.text(F_SANS9, MUTED, "Unofficial", 312, 37, BR_DATUM);
+#endif
   c.text(F_SANS12, IVORY, "Brightness", 12, 69);
   c.text(F_SANS12, IVORY, "Auto-dim", 12, 107);
   c.text(F_SANS12, IVORY, "Clock", 12, 145);
@@ -186,7 +189,7 @@ static void drawSettings(Canvas& c) {
   drawBtn(c, R_CLOCK, g_h24 ? "24-hour" : "12-hour");
   drawBtn(c, R_AUTO, autoSwitch ? "On" : "Off");
   drawBtn(c, R_RECAL, "Recalibrate");
-  drawBtn(c, R_BACK, "Back", CLAY, BG);
+  drawBtn(c, R_BACK, "Back", ACCENT, BG);
 }
 
 // ---- render ----------------------------------------------------------------
@@ -246,9 +249,9 @@ static void calibrate() {
       tft.setTextColor(IVORY);
       tft.drawString("Touch the crosshair", 160, 110, 2);
       int x = scr[i][0], y = scr[i][1];
-      tft.drawFastHLine(x - 12, y, 25, CLAY);
-      tft.drawFastVLine(x, y - 12, 25, CLAY);
-      tft.drawCircle(x, y, 6, CLAY);
+      tft.drawFastHLine(x - 12, y, 25, ACCENT);
+      tft.drawFastVLine(x, y - 12, 25, ACCENT);
+      tft.drawCircle(x, y, 6, ACCENT);
       touchRawWait(raw[i][0], raw[i][1]);
     }
     if (touchSetCal(scr, raw)) break;
@@ -306,6 +309,26 @@ void uiHandleTouch(const TouchResult& t) {
   }
 }
 
+// ---- unofficial notice (Claude look only) -----------------------------------
+#ifdef BRAND_CLAUDE
+#pragma message("BRAND_CLAUDE: unofficial look, not affiliated with or endorsed by Anthropic")
+// The Claude look borrows Anthropic's name and styling, so say plainly at every boot that
+// this is a fan project.
+static void showUnofficialSplash() {
+  if (!spriteOk) return;
+  for (int band = 0; band < 2; band++) {
+    Canvas c{spr, band * 120};
+    spr.fillSprite(BG);
+    drawMark(c, 160, 66, 30, ACCENT, BG);
+    c.text(F_BRAND, IVORY, "Claude usage monitor", 160, 128, BC_DATUM);
+    c.text(F_SANS12, DIM, "Unofficial fan project", 160, 160, BC_DATUM);
+    c.text(F_SANS12, DIM, "Not affiliated with Anthropic", 160, 186, BC_DATUM);
+    spr.pushSprite(0, band * 120);
+  }
+  delay(6000);
+}
+#endif
+
 // ---- lifecycle -------------------------------------------------------------
 void uiBegin() {
   tft.init();
@@ -320,6 +343,9 @@ void uiBegin() {
   spriteOk = spr.createSprite(320, 120) != nullptr;
   if (!spriteOk) Serial.println("sprite alloc failed");
 
+#ifdef BRAND_CLAUDE
+  showUnofficialSplash();
+#endif
   touchBegin();
   if (!touchLoadCal()) calibrate();
   lastTouch = millis();

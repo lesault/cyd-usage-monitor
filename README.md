@@ -5,8 +5,8 @@ that shows your Claude usage at a glance: time left in the current 5-hour sessio
 much of the session and weekly allowance you've used, and when each resets. When Claude
 is quiet it turns into an ambient Mac display (clock, system health, activity history).
 
-Unofficial hobby project, not affiliated with or endorsed by Anthropic. "Claude" is an
-Anthropic trademark; the spark mark is a rough approximation drawn in code.
+Unofficial hobby project, not affiliated with or endorsed by Anthropic. It reads usage
+figures that Claude Code already exposes to its statusLine; see [Branding](#branding).
 
 ```
 Claude Code -> statusline.py -> state.json + history.jsonl ->
@@ -28,9 +28,27 @@ Tested on one board. Other CYD variants may need display flags changed; see the 
    `esptool read-flash 0x0 0x400000 backup.bin --port /dev/cu.usbserial-*`
    (use `--baud 115200`; faster rates are flaky on many CH340 boards).
 2. **Flash the firmware:** `pio run -t upload --upload-port /dev/cu.usbserial-*`
+   (neutral look; see [Branding](#branding) for the Claude-style one)
 3. **Install the host side:** `host/install.sh` installs the bridge as a launchd agent
    and prints the `statusLine` setting to add to `~/.claude/settings.json`.
 4. On first boot the CYD asks you to touch three crosshairs to calibrate the touchscreen.
+
+## Branding
+The default build is deliberately neutral: cool dark grey, teal accent, a gauge-style mark
+and "Usage" in the header. For a Claude-style look (warm palette, orange spark mark, "Claude"
+wordmark) build the other environment:
+
+```
+pio run -e cyd-claude -t upload --upload-port /dev/cu.usbserial-*
+```
+
+That look borrows Anthropic's name and styling, so it is **unofficial** and labelled as such:
+the device shows "Unofficial fan project - Not affiliated with Anthropic" for six seconds
+at every boot, "Unofficial" on the Settings page, and the build prints a notice.
+"Claude" and its logo are Anthropic trademarks; the spark here is an approximation drawn in
+code, not their artwork. Use the Claude look for your own device, and keep the label if you
+share builds or photos. Change the header text of either look with
+`-DBRAND_NAME='"Your text"'` in `build_flags`.
 
 ## Pages (tap right / left half to cycle)
 Home (session + weekly) - Forecast - Info - Activity - Health - Clock

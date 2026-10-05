@@ -89,7 +89,7 @@ void drawActivity(Canvas& c, int64_t now) {
     int x = 18 + i * 42, cx = x + 13;
     int h = (int)(maxh * a.days[i] / maxv);
     if (a.days[i] > 0 && h < 3) h = 3;
-    if (h > 0) c.rrect(x, axis - h, 26, h, 3, i == 6 ? CLAY : MUTED);
+    if (h > 0) c.rrect(x, axis - h, 26, h, 3, i == 6 ? ACCENT : MUTED);
     if (a.days[i] > 0) {
       snprintf(buf, sizeof buf, a.days[i] >= 10 || a.days[i] == (int)a.days[i] ? "%.0f" : "%.1f",
                a.days[i]);
@@ -119,7 +119,7 @@ void drawClock(Canvas& c, int64_t now) {
   int x0 = 160 - (dw + cw + dw + sw) / 2;
 
   c.text(F_SANSB24, IVORY, hh, x0 + dw, base, BR_DATUM, SZ);
-  if (t.tm_sec % 2 == 0) c.text(F_SANSB24, CLAY, ":", x0 + dw, base, BL_DATUM, SZ);
+  if (t.tm_sec % 2 == 0) c.text(F_SANSB24, ACCENT, ":", x0 + dw, base, BL_DATUM, SZ);
   c.text(F_SANSB24, IVORY, mm, x0 + dw + cw, base, BL_DATUM, SZ);
   if (sw) c.text(F_SANS12, DIM, suffix, x0 + dw + cw + dw + 6, base, BL_DATUM);
 
@@ -129,7 +129,7 @@ void drawClock(Canvas& c, int64_t now) {
                                  "August", "September", "October", "November", "December"};
   char date[40];
   snprintf(date, sizeof date, "%s %d %s", DAYS[t.tm_wday], t.tm_mday, MONTHS[t.tm_mon]);
-  c.text(F_SERIF12, IVORY, date, 160, 160, BC_DATUM);
+  c.text(F_BRAND, IVORY, date, 160, 160, BC_DATUM);
 
   char line[40];
   const Window &s = g_data.s, &w = g_data.w;
@@ -170,7 +170,7 @@ void drawAlert(Canvas& c, int code, int extraCount, int64_t now) {
 
   // inset 4 px like the cards: the panel edge is not fully visible
   for (int i = 0; i < 3; i++) c.outline(4 + i, 4 + i, 312 - 2 * i, 232 - 2 * i, 12 - i, col);
-  drawSpark(c, 160, 62, 30, col, BG);
+  drawMark(c, 160, 62, 30, col, BG);
   c.text(F_SANSB18, IVORY, title, 160, 132, BC_DATUM);
   c.text(F_SANS12, DIM, reason, 160, 164, BC_DATUM);
 
