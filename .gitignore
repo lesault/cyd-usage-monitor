@@ -11,3 +11,6 @@ backup/
 *.log
 .vscode/
 .DS_Store
+
+# full-size photo originals stay local; the README uses the resized JPEGs
+docs/images/originals/

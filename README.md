@@ -13,6 +13,20 @@ Claude Code -> statusline.py -> state.json + history.jsonl ->
    bridge.py (launchd; + Mac stats, idle/night/alert rules) -> USB serial -> CYD
 ```
 
+## Screenshots
+<p align="center">
+  <img src="docs/images/device.jpg" width="560" alt="The dashboard on a CYD sitting on a Mac mini, showing a session at 93% in red">
+  <br><sub>On a Mac mini. Bars turn amber, then red, as you near a limit (test data shown here).</sub>
+</p>
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/home.jpg" width="280" alt="Home page: session and weekly usage"><br><sub><b>Home</b>: usage, reset countdowns, pace marker</sub></td>
+    <td align="center"><img src="docs/images/forecast.jpg" width="280" alt="Forecast page"><br><sub><b>Forecast</b>: will you hit the limit?</sub></td>
+    <td align="center"><img src="docs/images/info.jpg" width="280" alt="Info page: model, context, cost, duration, lines"><br><sub><b>Info</b>: model, context, cost, lines</sub></td>
+  </tr>
+</table>
+
 ## Requirements
 - A CYD (ESP32-2432S028, 2.8" 320x240 ILI9341 with XPT2046 touch) and a USB cable
 - macOS (the host side uses launchd) with Python 3
