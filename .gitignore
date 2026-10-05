@@ -1,0 +1,8 @@
+# toolchain and build output
+.venv/
+.pio/
+
+# raw flash dump of the original firmware: may contain WiFi settings, not ours to publish
+backup/
+
+.DS_Store
