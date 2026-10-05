@@ -1,13 +1,36 @@
 # CYD Claude usage monitor
 
-A 320x240 landscape dashboard on an ESP32 "Cheap Yellow Device" (ESP32-2432S028).
-It shows Claude session and weekly usage, and becomes an ambient Mac display
-(clock, health, activity) when Claude is quiet. Data reaches it over USB serial.
+A 320x240 landscape dashboard for the ESP32 "Cheap Yellow Device" (ESP32-2432S028)
+that shows your Claude usage at a glance: time left in the current 5-hour session, how
+much of the session and weekly allowance you've used, and when each resets. When Claude
+is quiet it turns into an ambient Mac display (clock, system health, activity history).
+
+Unofficial hobby project, not affiliated with or endorsed by Anthropic. "Claude" is an
+Anthropic trademark; the spark mark is a rough approximation drawn in code.
 
 ```
 Claude Code -> statusline.py -> state.json + history.jsonl ->
-   bridge.py (launchd; + Mac stats, idle/night/alert rules) -> USB -> CYD
+   bridge.py (launchd; + Mac stats, idle/night/alert rules) -> USB serial -> CYD
 ```
+
+## Requirements
+- A CYD (ESP32-2432S028, 2.8" 320x240 ILI9341 with XPT2046 touch) and a USB cable
+- macOS (the host side uses launchd) with Python 3
+- [PlatformIO](https://platformio.org) (`pip install platformio`)
+- Claude Code whose statusLine JSON includes `rate_limits` (it did for the author's
+  subscription login; API-key setups may not have it)
+
+Tested on one board. Other CYD variants may need display flags changed; see the comment in
+`platformio.ini`.
+
+## Quick start
+1. **Back up the original firmware** (so you can restore it):
+   `esptool read-flash 0x0 0x400000 backup.bin --port /dev/cu.usbserial-*`
+   (use `--baud 115200`; faster rates are flaky on many CH340 boards).
+2. **Flash the firmware:** `pio run -t upload --upload-port /dev/cu.usbserial-*`
+3. **Install the host side:** `host/install.sh` installs the bridge as a launchd agent
+   and prints the `statusLine` setting to add to `~/.claude/settings.json`.
+4. On first boot the CYD asks you to touch three crosshairs to calibrate the touchscreen.
 
 ## Pages (tap right / left half to cycle)
 Home (session + weekly) - Forecast - Info - Activity - Health - Clock
@@ -43,15 +66,12 @@ or a monitored service down.
 ```
 `night: null` disables night mode. `services` are launchd labels (`system/<label>` for daemons).
 
-## Install / update
-- Firmware: `.venv/bin/pio run -t upload --upload-port /dev/cu.usbserial-*`
-  (stop the bridge first: `launchctl bootout gui/$(id -u)/com.user.claude-cyd`).
-  The port number changes occasionally; check `ls /dev/cu.usbserial*`.
-- Host: `host/install.sh` (copies scripts to `~/.claude-cyd`, installs the launchd agent).
-  Re-run after editing anything in `host/`.
-- `~/.claude/settings.json` needs:
-  `"statusLine": {"type": "command", "command": "python3 ~/.claude-cyd/statusline.py", "refreshInterval": 30}`
-- Host tests: `.venv/bin/python -m unittest discover -s host/tests`
+## Updating
+- Firmware: stop the bridge (`launchctl bootout gui/$(id -u)/com.user.claude-cyd`; only one
+  process can hold the serial port), then `pio run -t upload`. The port name can change
+  between plug-ins; check `ls /dev/cu.usbserial*`.
+- Host: re-run `host/install.sh` after editing anything in `host/`.
+- Host tests: `python3 -m unittest discover -s host/tests`
 
 ## Frame format (bridge -> CYD, one JSON line every ~5 s)
 `t, tz` (clock) - `age, s, w, m, c, cost, dur, la, lr` (Claude state; s/w = `{p, r}` percent and
@@ -65,10 +85,10 @@ reset epoch) - `auto, night` (flags) - `al` (alert codes `sess|week|disk|svc`) -
 - The 7-day Activity chart (weekly allowance used per day) fills in over a week; history
   starts when `statusline.py` first runs and is kept 14 days in `history.jsonl`.
 - The ESP32 reboots when the bridge connects (macOS toggles reset); it recovers within 5 s.
-- The right edge of the panel is not fully visible, so everything keeps a 4 px margin.
-- Test screens without Claude: `.venv/bin/python host/fake_feed.py SCENARIO`
-  (low, mid, high, limit, expired, nodata, idle, night, alert-sess, alert-disk, alert-svc).
-  Stop the bridge first: only one process can hold the port.
-- Restore Marauder: `.venv/bin/esptool --port /dev/cu.usbserial-* --baud 115200 write-flash 0x0 backup/marauder-backup.bin`
-  (the backup is local only, deliberately not in git).
+- On the author's panel the right edge is not fully visible, so everything keeps a 4 px margin.
+- Test screens without Claude: `python3 host/fake_feed.py SCENARIO` (low, mid, high, limit,
+  expired, nodata, idle, night, alert-sess, alert-disk, alert-svc; needs `pyserial`).
 - Logs in `~/.claude-cyd/`: `bridge.log`, `missing.log` (windows Claude Code omitted), `regress.log`.
+- To uninstall: `launchctl bootout gui/$(id -u)/com.user.claude-cyd`, delete
+  `~/Library/LaunchAgents/com.user.claude-cyd.plist` and `~/.claude-cyd`, and remove the
+  `statusLine` entry from `~/.claude/settings.json`.

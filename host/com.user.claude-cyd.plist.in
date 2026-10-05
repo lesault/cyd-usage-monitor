@@ -6,8 +6,8 @@
   <string>com.user.claude-cyd</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Volumes/Warm/CYD/.venv/bin/python</string>
-    <string>/Volumes/Warm/CYD/host/bridge.py</string>
+    <string>__PYTHON__</string>
+    <string>__BRIDGE__</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -16,8 +16,8 @@
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/Users/lesault/.claude-cyd/bridge.log</string>
+  <string>__LOG__</string>
   <key>StandardErrorPath</key>
-  <string>/Users/lesault/.claude-cyd/bridge.log</string>
+  <string>__LOG__</string>
 </dict>
 </plist>

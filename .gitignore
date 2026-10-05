@@ -1,8 +1,13 @@
 # toolchain and build output
 .venv/
 .pio/
+__pycache__/
+*.pyc
 
 # raw flash dump of the original firmware: may contain WiFi settings, not ours to publish
 backup/
 
+# local logs, editor and OS files
+*.log
+.vscode/
 .DS_Store
