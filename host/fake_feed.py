@@ -2,7 +2,13 @@
 """Send canned frames to the CYD to check each screen state.
 
 usage: fake_feed.py SCENARIO [--port /dev/cu.usbserial-xxxx]
-scenarios: low  mid  high  limit  expired  nodata  timeonly
+scenarios: low mid high limit expired nodata timeonly
+           idle        Claude quiet -> ambient rotation (clock/health/activity)
+           night       quiet hours -> dimmed
+           alert-sess  session at 93% -> takeover
+           alert-disk  low disk space -> takeover
+           alert-svc   a monitored service is down -> takeover
+(stop the real bridge first: only one process can hold the serial port)
 """
 import argparse
 import glob
@@ -13,35 +19,61 @@ import serial
 
 H = 3600
 
+# (session %, hours into session, weekly %, days into week)
+USAGE = {
+    "low": (12, 1.0, 8, 1.5),
+    "mid": (58, 2.0, 40, 3.0),
+    "high": (91, 3.0, 82, 5.5),
+    "limit": (100, 4.5, 97, 6.5),
+}
+SYS = {"cpu": 23, "mem": 71, "disk": 4, "free": 308, "up": 432000, "rx": 120, "tx": 30,
+       "svc": [1, 1], "svn": ["claude-cyd", "tailscale"]}
+ACT = {"today": 1.84, "n": 3, "last": 120, "days": [0, 3, 8, 2, 0, 5, 4]}
+
 
 def frame(scn, base):
     now = int(time.time())
     f = {"t": now, "tz": time.localtime(now).tm_gmtoff}
     if scn == "timeonly":
         return f
-    f.update({"age": 5, "m": "Sonnet 5.5", "c": 31, "cost": 1.84, "dur": 5400, "la": 212, "lr": 37})
-    # (session %, hours into session, weekly %, days into week)
-    table = {
-        "low": (12, 1.0, 8, 1.5),
-        "mid": (58, 2.0, 40, 3.0),
-        "high": (91, 3.0, 82, 5.5),
-        "limit": (100, 4.5, 97, 6.5),
-    }
+    f.update({"age": 5, "m": "Sonnet 5.5", "c": 31, "cost": 1.84, "dur": 5400, "la": 212, "lr": 37,
+              "auto": 0, "night": 0, "al": [], "sys": dict(SYS), "act": dict(ACT)})
     if scn == "nodata":
         return f
     if scn == "expired":
         f["s"] = {"p": 77, "r": base - 600}
         f["w"] = {"p": 30, "r": base + 3 * 86400}
         return f
-    sp, sh, wp, wd = table[scn]
+
+    usage = scn if scn in USAGE else "mid"
+    if scn == "alert-sess":
+        usage = "high"
+    sp, sh, wp, wd = USAGE[usage]
+    if scn == "alert-sess":
+        sp = 93
     f["s"] = {"p": sp, "r": int(base + (5 - sh) * H)}
     f["w"] = {"p": wp, "r": int(base + (7 - wd) * 86400)}
+
+    if scn == "idle":
+        f["auto"], f["act"]["last"] = 1, 900
+    elif scn == "night":
+        f["night"] = 1
+    elif scn == "alert-sess":
+        f["al"] = ["sess"]
+    elif scn == "alert-disk":
+        f["al"], f["sys"]["disk"], f["sys"]["free"] = ["disk"], 94, 28
+    elif scn == "alert-svc":
+        f["al"], f["sys"]["svc"] = ["svc"], [1, 0]
     return f
+
+
+SCENARIOS = list(USAGE) + ["expired", "nodata", "timeonly", "idle", "night",
+                           "alert-sess", "alert-disk", "alert-svc"]
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario")
+    ap.add_argument("scenario", choices=SCENARIOS)
     ap.add_argument("--port")
     a = ap.parse_args()
     port = a.port or sorted(glob.glob("/dev/cu.usbserial-*"))[0]

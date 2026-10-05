@@ -39,6 +39,45 @@ def atomic_write(path, text):
     os.replace(tmp, path)
 
 
+HEARTBEAT = 120  # seconds between unchanged history rows
+
+
+def append_history(now, sid, state):
+    """Append a row to history.jsonl when something changed (or as a heartbeat).
+
+    O_APPEND single writes keep concurrent Claude Code sessions from corrupting it.
+    """
+    row = {
+        "ts": now, "sid": sid[:8], "cost": state["cost"], "la": state["la"], "lr": state["lr"],
+        "s": state["s"]["p"] if state["s"] else None,
+        "w": state["w"]["p"] if state["w"] else None,
+        "dur": state["dur"],
+    }
+    path = os.path.join(DIR, "history.jsonl")
+    sig = ("cost", "la", "lr", "s", "w")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            tail = f.read().decode(errors="ignore").splitlines()
+        for line in reversed(tail):
+            try:
+                last = json.loads(line)
+            except ValueError:
+                continue
+            if last.get("sid") == row["sid"]:
+                if all(last.get(k) == row[k] for k in sig) and now - last["ts"] < HEARTBEAT:
+                    return
+                break
+    except OSError:
+        pass
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, (json.dumps(row, separators=(",", ":")) + "\n").encode())
+    finally:
+        os.close(fd)
+
+
 def main():
     text = sys.stdin.read()
     try:
@@ -66,6 +105,15 @@ def main():
             old = prev.get(out)
             if old and old["r"] > now:
                 win = old
+        else:
+            # Usage only rises within a window, so a lower reading is a stale session's
+            # value racing a fresher one: keep the higher and log it for diagnosis.
+            old = prev.get(out)
+            if old and old["r"] == win["r"] and old["p"] > win["p"]:
+                with open(os.path.join(DIR, "regress.log"), "a") as f:
+                    f.write("%d %s sid=%s sent=%s kept=%s\n"
+                            % (now, key, str(raw.get("session_id", ""))[:8], win["p"], old["p"]))
+                win = old
         wins[out] = win
 
     state = {
@@ -80,6 +128,7 @@ def main():
         "lr": dig(raw, "cost", "total_lines_removed"),
     }
     atomic_write(os.path.join(DIR, "state.json"), json.dumps(state))
+    append_history(now, str(raw.get("session_id", "")), state)
 
     s, w = state["s"], state["w"]
     parts = [state["m"] or "claude"]

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Forward Claude usage state to the CYD over USB serial.
+"""Forward Claude usage and Mac health to the CYD over USB serial.
 
-Reads ~/.claude-cyd/state.json (written by statusline.py) and sends one JSON
-line every few seconds. Always sends the wall-clock time so the CYD clock and
-countdowns work even when no Claude Code session is running. Reconnects when
-the cable is unplugged.
+Reads ~/.claude-cyd/state.json (written by statusline.py), samples the Mac, and
+sends one JSON line every few seconds. The bridge makes the decisions (idle,
+night, alerts); the firmware just renders. Reconnects when the cable is
+unplugged. See README for the frame format.
 """
 import argparse
 import glob
@@ -15,7 +15,13 @@ import time
 
 import serial
 
+import activity
+import cydconfig
+import rules
+import sysstats
+
 STATE = os.path.expanduser("~/.claude-cyd/state.json")
+CONFIG_RELOAD_S = 30
 
 
 def find_port(explicit):
@@ -25,18 +31,39 @@ def find_port(explicit):
     return ports[0] if ports else None
 
 
-def build_frame():
-    now = int(time.time())
-    frame = {"t": now, "tz": time.localtime(now).tm_gmtoff}
+def load_state():
     try:
         with open(STATE) as f:
-            st = json.load(f)
-        frame["age"] = max(0, now - int(st.get("ts", now)))
-        for k in ("s", "w", "m", "c", "cost", "dur", "la", "lr"):
-            if st.get(k) is not None:
-                frame[k] = st[k]
+            return json.load(f)
     except (OSError, ValueError):
-        pass  # no data yet: send time only
+        return None
+
+
+def build_frame(cfg, sampler, act, now=None):
+    now = int(now if now is not None else time.time())
+    lt = time.localtime(now)
+    frame = {"t": now, "tz": lt.tm_gmtoff}
+
+    state = load_state()
+    if state:
+        frame["age"] = max(0, now - int(state.get("ts", now)))
+        for k in ("s", "w", "m", "c", "cost", "dur", "la", "lr"):
+            if state.get(k) is not None:
+                frame[k] = state[k]
+
+    sysinfo = sampler.snapshot(cfg["services"])
+    summary = act.summary(now, lt.tm_gmtoff)
+    idle = summary["idle"]
+    frame["auto"] = int(idle is None or idle >= cfg["idle_min"] * 60)
+    frame["night"] = int(rules.in_night(lt.tm_hour * 60 + lt.tm_min, cfg["night"]))
+    frame["al"] = rules.compute_alerts(state, sysinfo, cfg, now)
+    frame["sys"] = sysstats.public(sysinfo)
+    frame["act"] = {
+        "today": summary["today"],
+        "n": summary["n"],
+        "last": -1 if idle is None else idle,
+        "days": summary["days"],
+    }
     return frame
 
 
@@ -58,6 +85,10 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
+    cydconfig.ensure()
+    cfg, cfg_t = cydconfig.load(), time.time()
+    sampler, act = sysstats.Sampler(), activity.Activity()
+    last_prune_day = None
     ser = None
     while True:
         try:
@@ -68,7 +99,16 @@ def main():
                     continue
                 ser = open_port(path)
                 print("connected:", path, flush=True)
-            line = json.dumps(build_frame(),separators=(",", ":")) + "\n"
+
+            if time.time() - cfg_t > CONFIG_RELOAD_S:
+                cfg, cfg_t = cydconfig.load(), time.time()
+            tz = time.localtime().tm_gmtoff
+            today = activity.day_index(time.time(), tz)
+            if today != last_prune_day:
+                activity.prune(tz=tz)
+                last_prune_day = today
+
+            line = json.dumps(build_frame(cfg, sampler, act), separators=(",", ":")) + "\n"
             ser.write(line.encode())
             if args.verbose:
                 print(">", line.strip(), flush=True)

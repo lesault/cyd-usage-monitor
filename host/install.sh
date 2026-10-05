@@ -9,9 +9,10 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 mkdir -p "$DEST"
 [[ -x "$DEST/venv/bin/python" ]] || python3 -m venv "$DEST/venv"
-"$DEST/venv/bin/pip" install -q pyserial
-cp "$SRC/bridge.py" "$SRC/statusline.py" "$DEST/"
+"$DEST/venv/bin/pip" install -q pyserial psutil
+for f in bridge statusline cydconfig rules activity sysstats; do cp "$SRC/$f.py" "$DEST/"; done
 chmod +x "$DEST/statusline.py"
+"$DEST/venv/bin/python" "$DEST/cydconfig.py"  # writes default config.json if missing
 
 sed -e "s#/Volumes/Warm/CYD/.venv/bin/python#$DEST/venv/bin/python#" \
     -e "s#/Volumes/Warm/CYD/host/bridge.py#$DEST/bridge.py#" \
