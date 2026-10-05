@@ -1,4 +1,4 @@
-# CYD Claude usage monitor
+# CYD Usage Monitor
 
 A 320x240 landscape dashboard for the ESP32 "Cheap Yellow Device" (ESP32-2432S028)
 that shows your Claude usage at a glance: time left in the current 5-hour session, how
