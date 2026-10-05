@@ -92,3 +92,17 @@ reset epoch) - `auto, night` (flags) - `al` (alert codes `sess|week|disk|svc`) -
 - To uninstall: `launchctl bootout gui/$(id -u)/com.user.claude-cyd`, delete
   `~/Library/LaunchAgents/com.user.claude-cyd.plist` and `~/.claude-cyd`, and remove the
   `statusLine` entry from `~/.claude/settings.json`.
+
+## Licence
+MIT, see [LICENSE](LICENSE). This repo contains only original code; the libraries below are
+downloaded by PlatformIO / pip at build or install time and keep their own licences:
+
+| Dependency | Licence |
+|---|---|
+| [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI) (incl. its bundled Adafruit GFX fonts) | FreeBSD / BSD |
+| [XPT2046_Touchscreen](https://github.com/PaulStoffregen/XPT2046_Touchscreen) | MIT |
+| [ArduinoJson](https://arduinojson.org) | MIT |
+| [pyserial](https://github.com/pyserial/pyserial), [psutil](https://github.com/giampaolo/psutil) | BSD |
+
+If you distribute a compiled firmware image rather than this source, it embeds those
+libraries and fonts, so include their notices with it.
