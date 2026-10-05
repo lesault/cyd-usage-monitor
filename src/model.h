@@ -7,6 +7,28 @@ struct Window {
   int64_t resetsAt = 0;  // epoch seconds (UTC)
 };
 
+// Alert codes sent by the bridge in "al"; bit positions in Data::alertMask.
+enum AlertBit { AL_SESS = 1, AL_WEEK = 2, AL_DISK = 4, AL_SVC = 8 };
+
+struct Sys {
+  bool valid = false;
+  int cpu = 0, mem = 0, disk = 0;  // %
+  int freeGb = 0;
+  uint32_t up = 0;                 // uptime, seconds
+  int rx = 0, tx = 0;              // KB/s
+  uint8_t nsvc = 0;
+  bool svc[4] = {false, false, false, false};
+  char svn[4][14] = {"", "", "", ""};
+};
+
+struct Act {
+  bool valid = false;
+  float today = 0;     // USD
+  int n = 0;           // sessions today
+  int32_t last = -1;   // seconds since Claude last changed, -1 = never
+  float days[7] = {0, 0, 0, 0, 0, 0, 0};  // weekly-% used per day, oldest first
+};
+
 struct Data {
   bool haveTime = false;   // at least one frame received (clock is valid)
   bool haveState = false;  // frame carried Claude Code state
@@ -21,6 +43,11 @@ struct Data {
   uint32_t epochMillis = 0;
   uint32_t rxMillis = 0;   // when the last frame arrived
   uint32_t ageAtRx = 0;    // age of the Claude state when the frame was sent
+  Sys sys;
+  Act act;
+  bool idleAuto = false;   // Claude has been quiet: rotate ambient pages
+  bool night = false;      // quiet hours: dim
+  uint8_t alertMask = 0;   // AlertBit flags currently raised by the bridge
 };
 
 extern Data g_data;

@@ -7,7 +7,7 @@
 #include "ui.h"
 
 static void readSerial() {
-  static char buf[768];
+  static char buf[1024];
   static size_t n = 0;
   while (Serial.available()) {
     char ch = Serial.read();

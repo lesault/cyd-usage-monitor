@@ -47,5 +47,48 @@ bool parseFrame(const char* line) {
     g_data.la = doc["la"] | -1;
     g_data.lr = doc["lr"] | -1;
   }
+
+  g_data.idleAuto = (doc["auto"] | 0) != 0;
+  g_data.night = (doc["night"] | 0) != 0;
+
+  g_data.alertMask = 0;
+  for (JsonVariantConst code : doc["al"].as<JsonArrayConst>()) {
+    const char* s = code | "";
+    if (!strcmp(s, "sess")) g_data.alertMask |= AL_SESS;
+    else if (!strcmp(s, "week")) g_data.alertMask |= AL_WEEK;
+    else if (!strcmp(s, "disk")) g_data.alertMask |= AL_DISK;
+    else if (!strcmp(s, "svc")) g_data.alertMask |= AL_SVC;
+  }
+
+  JsonObjectConst sys = doc["sys"];
+  if (!sys.isNull()) {
+    Sys& o = g_data.sys;
+    o.valid = true;
+    o.cpu = sys["cpu"] | 0;
+    o.mem = sys["mem"] | 0;
+    o.disk = sys["disk"] | 0;
+    o.freeGb = sys["free"] | 0;
+    o.up = sys["up"] | 0;
+    o.rx = sys["rx"] | 0;
+    o.tx = sys["tx"] | 0;
+    o.nsvc = 0;
+    JsonArrayConst svc = sys["svc"], svn = sys["svn"];
+    for (size_t i = 0; i < svc.size() && i < 4; i++) {
+      o.svc[i] = (svc[i] | 0) != 0;
+      strlcpy(o.svn[i], svn[i] | "", sizeof(o.svn[i]));
+      o.nsvc = i + 1;
+    }
+  }
+
+  JsonObjectConst act = doc["act"];
+  if (!act.isNull()) {
+    Act& o = g_data.act;
+    o.valid = true;
+    o.today = act["today"] | 0.0f;
+    o.n = act["n"] | 0;
+    o.last = act["last"] | -1;
+    JsonArrayConst days = act["days"];
+    for (size_t i = 0; i < 7; i++) o.days[i] = i < days.size() ? (days[i] | 0.0f) : 0.0f;
+  }
   return true;
 }
