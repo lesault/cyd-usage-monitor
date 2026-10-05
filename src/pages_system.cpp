@@ -33,10 +33,10 @@ void drawHealth(Canvas& c) {
 
   fmtRate(s.rx, a, sizeof a);
   fmtRate(s.tx, b, sizeof b);
-  c.text(F_SANS9, DIM, "In", 16, 184);
-  c.text(F_SANS9, IVORY, a, 34, 184);
-  c.text(F_SANS9, DIM, "Out", 160, 184);
-  c.text(F_SANS9, IVORY, b, 188, 184);
+  int inW = c.text(F_SANS9, DIM, "In", 16, 184);
+  c.text(F_SANS9, IVORY, a, 16 + inW + 6, 184);
+  int outW = c.text(F_SANS9, DIM, "Out", 160, 184);
+  c.text(F_SANS9, IVORY, b, 160 + outW + 6, 184);
 
   char up[24];
   fmtDur(s.up, up, sizeof up);
