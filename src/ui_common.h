@@ -60,6 +60,10 @@ struct Canvas {
     s.drawRoundRect(x, y - dy, w, h, r, c);
   }
   void circle(int x, int y, int r, uint16_t c) { s.fillCircle(x, y - dy, r, c); }
+  void ellipse(int x, int y, int rx, int ry, uint16_t c) { s.fillEllipse(x, y - dy, rx, ry, c); }
+  void tri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c) {
+    s.fillTriangle(x0, y0 - dy, x1, y1 - dy, x2, y2 - dy, c);
+  }
   // Free-font text. Use baseline datums (BL/BR/BC) for predictable placement.
   int text(const GFXfont* f, uint16_t col, const char* t, int x, int y, uint8_t datum = BL_DATUM,
            uint8_t size = 1) {

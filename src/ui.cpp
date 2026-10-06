@@ -9,8 +9,8 @@
 
 // ---- pages -----------------------------------------------------------------
 // Order matters: tapping cycles through the first NAV_PAGES in this order.
-enum Page { P_HOME, P_FORECAST, P_INFO, P_ACTIVITY, P_HEALTH, P_CLOCK, P_SETTINGS };
-static const int NAV_PAGES = 6;  // settings is reached by long-press only
+enum Page { P_HOME, P_FORECAST, P_INFO, P_ACTIVITY, P_HEALTH, P_CLOCK, P_SETTINGS, P_SCENE };
+static const int NAV_PAGES = 6;  // settings and the scene are reached by long-press only
 static const int NAV_Y = 222;
 
 // Auto-rotation while Claude is idle: page and how long it stays up (ms).
@@ -211,6 +211,10 @@ static void drawPage(Canvas& c) {
     drawSettings(c);
     return;
   }
+  if (page == P_SCENE) {
+    drawScene(c, g_data.haveTime ? nowEpoch() : 0);
+    return;
+  }
   drawHeader(c);
   if (!g_data.haveTime) {
     drawNoLink(c);
@@ -282,6 +286,11 @@ void uiHandleTouch(const TouchResult& t) {
     return;
   }
 
+  if (page == P_SCENE) {  // any tap leaves the scene
+    if (t.ev == TE_TAP) page = P_HOME;
+    return;
+  }
+
   if (page == P_SETTINGS) {
     if (t.ev != TE_TAP) return;
     if (inRect(R_BR_MINUS, t.x, t.y)) brightness = max(10, brightness - 10);
@@ -299,7 +308,8 @@ void uiHandleTouch(const TouchResult& t) {
   }
 
   if (t.ev == TE_LONG) {
-    page = P_SETTINGS;
+    // Long-press the brand mark for the secret scene; anywhere else opens Settings.
+    page = (t.x < 44 && t.y < 34) ? P_SCENE : P_SETTINGS;
   } else if (t.y >= NAV_Y && t.x < 90 && page != P_CLOCK) {
     g_clockMode = !g_clockMode;
   } else if (t.x < 160) {
@@ -373,8 +383,8 @@ void uiTick() {
   }
 
   // Auto-rotation while Claude is quiet; snap back to Home when it wakes up.
-  bool wantAuto = autoSwitch && g_data.idleAuto && linkAlive() && page != P_SETTINGS && !alerts &&
-                  now - lastTouch > AUTO_AFTER_TOUCH_MS;
+  bool wantAuto = autoSwitch && g_data.idleAuto && linkAlive() && page != P_SETTINGS && page != P_SCENE &&
+                  !alerts && now - lastTouch > AUTO_AFTER_TOUCH_MS;
   if (wantAuto) {
     if (!autoActive) {
       autoActive = true;
@@ -392,12 +402,12 @@ void uiTick() {
     autoActive = false;
     if (!g_data.idleAuto) page = P_HOME;
     dirty = true;
-  } else if (page != P_HOME && now - lastTouch > (page == P_SETTINGS ? 60000UL : 30000UL)) {
+  } else if (page != P_HOME && page != P_SCENE && now - lastTouch > (page == P_SETTINGS ? 60000UL : 30000UL)) {
     page = P_HOME;
     dirty = true;
   }
 
-  if (dirty || now - lastRender >= 500) {
+  if (dirty || now - lastRender >= (page == P_SCENE ? 250UL : 500UL)) {
     render();
     lastRender = now;
     dirty = false;

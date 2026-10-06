@@ -13,3 +13,6 @@ void drawHealth(Canvas& c);
 void drawActivity(Canvas& c, int64_t now);
 void drawClock(Canvas& c, int64_t now);
 void drawAlert(Canvas& c, int code, int extraCount, int64_t now);  // full-screen takeover
+
+// Secret scene (pages_scene.cpp): full-screen, draws its own background, no header/nav.
+void drawScene(Canvas& c, int64_t now);
