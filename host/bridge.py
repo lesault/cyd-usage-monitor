@@ -148,74 +148,121 @@ def open_port(path):
     return ser
 
 
-def main():
+class Bridge:
+    """The send loop, one iteration per step(). Never raises (except KeyboardInterrupt).
+
+    Failures are handled by kind, because they need different responses: a serial problem
+    drops the connection and re-handshakes; a bad frame or failed housekeeping is logged and
+    skipped without touching the connection (launchd would otherwise restart-loop us).
+    Each kind logs a message once, then again only if it changes or after a success.
+    """
+
+    def __init__(self, sampler, act, port=None, interval=5.0, verbose=False, handshake=True,
+                 clock=time.time, sleep=time.sleep, daily=None):
+        self.sampler, self.act = sampler, act
+        self.port, self.interval, self.verbose, self.handshake = port, interval, verbose, handshake
+        self.clock, self.sleep = clock, sleep
+        self.daily = daily or self._daily_housekeeping
+        self.ser, self.rejected = None, {}
+        self.cfg, self.cfg_t = cydconfig.load(), clock()
+        self.last_prune_day = None
+        self._logged = {}
+
+    @staticmethod
+    def _daily_housekeeping(tz):
+        activity.prune(tz=tz)
+        activity.truncate_if_large(LOG)
+
+    def _log_once(self, kind, msg):
+        if self._logged.get(kind) != msg:
+            print(msg, flush=True)
+            self._logged[kind] = msg
+
+    def _disconnect(self):
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+
+    def _housekeeping(self, now):
+        if now - self.cfg_t > CONFIG_RELOAD_S:
+            self.cfg, self.cfg_t = cydconfig.load(), now
+        tz = time.localtime(now).tm_gmtoff
+        today = activity.day_index(now, tz)
+        if today != self.last_prune_day:
+            self.last_prune_day = today  # once a day, even if it fails
+            try:
+                self.daily(tz)
+                self._logged.pop("maintenance", None)
+            except Exception as e:
+                self._log_once("maintenance", "maintenance error: %r" % (e,))
+
+    def step(self):
+        if self.ser is None:
+            try:
+                self.ser, path = connect(self.port, self.rejected, check=self.handshake,
+                                         clock=self.clock)
+            except (serial.SerialException, OSError) as e:
+                self.ser, path = None, None
+                self._log_once("serial", "serial error: %s - retrying" % (e,))
+            if self.ser is None:
+                self.sleep(2)
+                return
+            print("connected:", path, flush=True)
+
+        try:
+            now = self.clock()
+            self._housekeeping(now)
+            line = json.dumps(build_frame(self.cfg, self.sampler, self.act, now=now),
+                              separators=(",", ":")) + "\n"
+        except Exception as e:  # a bad frame must not take the bridge down or drop the port
+            self._log_once("frame", "frame error: %r" % (e,))
+            self.sleep(self.interval)
+            return
+
+        try:
+            self.ser.write(line.encode())
+            if self.verbose:
+                print(">", line.strip(), flush=True)
+                echo = self.ser.read(512)
+                if echo:
+                    sys.stdout.write(echo.decode(errors="replace"))
+            else:
+                self.ser.read(512)  # drain firmware logs
+        except (serial.SerialException, OSError) as e:
+            # a busy or flaky port would otherwise log every 2 s
+            self._log_once("serial", "serial error: %s - retrying" % (e,))
+            self._disconnect()
+            self.sleep(2)
+            return
+        for kind in ("frame", "serial"):  # a frame went out: the next failure is news again
+            self._logged.pop(kind, None)
+        self.sleep(self.interval)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--no-handshake", action="store_true",
                     help="send to the port without checking it is a CYD (old firmware)")
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     cydconfig.ensure()
     try:
         os.chmod(LOG, 0o600)  # launchd creates it world-readable if install.sh didn't
     except OSError:
         pass
-    cfg, cfg_t = cydconfig.load(), time.time()
-    sampler, act = sysstats.Sampler(), activity.Activity()
-    last_prune_day = None
-    last_err = last_serial_err = None
-    ser, rejected = None, {}
-    while True:
-        try:
-            if ser is None:
-                ser, path = connect(args.port, rejected, check=not args.no_handshake)
-                if ser is None:
-                    time.sleep(2)
-                    continue
-                print("connected:", path, flush=True)
-                last_serial_err = None
-
-            if time.time() - cfg_t > CONFIG_RELOAD_S:
-                cfg, cfg_t = cydconfig.load(), time.time()
-            tz = time.localtime().tm_gmtoff
-            today = activity.day_index(time.time(), tz)
-            if today != last_prune_day:
-                activity.prune(tz=tz)
-                last_prune_day = today
-                activity.truncate_if_large(LOG)
-
-            line = json.dumps(build_frame(cfg, sampler, act), separators=(",", ":")) + "\n"
-            ser.write(line.encode())
-            if args.verbose:
-                print(">", line.strip(), flush=True)
-                echo = ser.read(512)
-                if echo:
-                    sys.stdout.write(echo.decode(errors="replace"))
-            else:
-                ser.read(512)  # drain firmware logs
-            time.sleep(args.interval)
-        except (serial.SerialException, OSError) as e:
-            msg = "serial error: %s - retrying" % (e,)
-            if msg != last_serial_err:  # a busy or flaky port would otherwise log every 2 s
-                print(msg, flush=True)
-                last_serial_err = msg
-            try:
-                if ser:
-                    ser.close()
-            except Exception:
-                pass
-            ser = None
-            time.sleep(2)
-        except KeyboardInterrupt:
-            break
-        except Exception as e:  # a bad frame must not take the bridge down (launchd would loop it)
-            msg = "frame error: %r" % (e,)
-            if msg != last_err:
-                print(msg, flush=True)
-                last_err = msg
-            time.sleep(args.interval)
+    bridge = Bridge(sysstats.Sampler(), activity.Activity(), port=args.port,
+                    interval=args.interval, verbose=args.verbose, handshake=not args.no_handshake)
+    try:
+        while True:
+            bridge.step()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

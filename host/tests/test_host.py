@@ -868,5 +868,259 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(dev.written, [])
 
 
+class FakePort:
+    def __init__(self, fail_writes=0, echo=b""):
+        self.writes, self.closed, self.fail_writes, self.echo = [], False, fail_writes, echo
+
+    def write(self, data):
+        if self.fail_writes:
+            self.fail_writes -= 1
+            raise bridge.serial.SerialException("write failed: device not configured")
+        self.writes.append(data)
+
+    def read(self, n):
+        out, self.echo = self.echo, b""
+        return out
+
+    def close(self):
+        self.closed = True
+
+
+class BoomSampler(FakeSampler):
+    def __init__(self, exc):
+        super().__init__([])
+        self.exc = exc
+
+    def snapshot(self, services):
+        if self.exc:
+            raise self.exc
+        return super().snapshot(services)
+
+
+class BridgeLoopTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        import io
+        self.out = io.StringIO()
+        self._redirect = contextlib.redirect_stdout(self.out)
+        self._redirect.__enter__()
+        self.d = tempfile.TemporaryDirectory()
+        self.saved = (bridge.STATE, bridge.connect, bridge.cydconfig.load, bridge.LOG)
+        bridge.STATE = os.path.join(self.d.name, "none.json")  # never read the real state
+        bridge.LOG = os.path.join(self.d.name, "bridge.log")
+        self.loads = 0
+        self.ports = []        # what connect() hands out, in order (None = nothing found)
+        self.connects = 0
+
+        def fake_load(path=None):
+            self.loads += 1
+            return cydconfig.DEFAULTS_COPY()
+
+        def fake_connect(port, rejected, check=True, clock=time.time):
+            self.connects += 1
+            ser = self.ports.pop(0) if self.ports else None
+            return (ser, "/dev/cu.usbserial-X") if ser else (None, None)
+
+        cydconfig.DEFAULTS_COPY = lambda: json.loads(json.dumps(cydconfig.DEFAULTS))
+        bridge.cydconfig.load = fake_load
+        bridge.connect = fake_connect
+        self.clock = FakeClock()
+        self.clock.t = 1_700_000_000.0
+        self.daily_calls = []
+
+    def tearDown(self):
+        self._redirect.__exit__(None, None, None)
+        bridge.STATE, bridge.connect, bridge.cydconfig.load, bridge.LOG = self.saved
+        del cydconfig.DEFAULTS_COPY
+        self.d.cleanup()
+
+    def make(self, sampler=None, **kw):
+        kw.setdefault("daily", self.daily_calls.append)
+        return bridge.Bridge(sampler or FakeSampler([]), FakeActivity(), clock=self.clock,
+                             sleep=self.clock.sleep, **kw)
+
+    def lines(self):
+        return [l for l in self.out.getvalue().splitlines() if l]
+
+    def test_nothing_plugged_in_waits_and_sends_nothing(self):
+        b = self.make()
+        t0 = self.clock.t
+        b.step()
+        self.assertEqual(self.clock.t - t0, 2)
+        self.assertIsNone(b.ser)
+        self.assertEqual(self.lines(), [])
+
+    def test_connects_then_sends_a_frame_each_step(self):
+        port = FakePort()
+        self.ports = [port]
+        b = self.make(interval=5.0)
+        t0 = self.clock.t
+        b.step()
+        b.step()
+        self.assertEqual(self.connects, 1)  # the second step reuses the connection
+        self.assertEqual(len(port.writes), 2)
+        self.assertEqual(self.clock.t - t0, 10)
+        frame = json.loads(port.writes[0])
+        self.assertTrue(port.writes[0].endswith(b"\n"))
+        self.assertEqual(frame["t"], 1_700_000_000)
+        self.assertEqual(self.lines(), ["connected: /dev/cu.usbserial-X"])
+
+    def test_write_failure_drops_the_port_and_reconnects(self):
+        bad, good = FakePort(fail_writes=99), FakePort()
+        self.ports = [bad, good]
+        b = self.make()
+        t0 = self.clock.t
+        b.step()
+        self.assertTrue(bad.closed)
+        self.assertIsNone(b.ser)
+        self.assertEqual(self.clock.t - t0, 2)  # short retry, not the full interval
+        b.step()
+        self.assertIs(b.ser, good)
+        self.assertEqual(len(good.writes), 1)
+        self.assertEqual(sum("serial error" in l for l in self.lines()), 1)
+
+    def test_a_repeating_serial_error_is_logged_once(self):
+        self.ports = [FakePort(fail_writes=99) for _ in range(5)]
+        b = self.make()
+        for _ in range(5):
+            b.step()
+        self.assertEqual(sum("serial error" in l for l in self.lines()), 1)
+
+    def test_serial_error_is_logged_again_after_a_successful_connection(self):
+        self.ports = [FakePort(fail_writes=1), FakePort(), FakePort(fail_writes=1)]
+        b = self.make()
+        b.step()   # fails
+        b.step()   # reconnects, sends fine
+        b.ser = None
+        b.step()   # fails the same way again
+        self.assertEqual(sum("serial error" in l for l in self.lines()), 2)
+
+    def test_bad_frame_is_survived_without_dropping_the_port(self):
+        port = FakePort()
+        self.ports = [port]
+        sampler = BoomSampler(RuntimeError("psutil exploded"))
+        b = self.make(sampler=sampler)
+        t0 = self.clock.t
+        b.step()
+        self.assertIs(b.ser, port)             # still connected
+        self.assertFalse(port.closed)
+        self.assertEqual(port.writes, [])
+        self.assertEqual(self.clock.t - t0, 5)  # normal pacing, not a reconnect delay
+        b.step()
+        b.step()
+        self.assertEqual(sum("frame error" in l for l in self.lines()), 1)
+        sampler.exc = None                      # recovers
+        b.step()
+        self.assertEqual(len(port.writes), 1)
+        sampler.exc = RuntimeError("psutil exploded")
+        b.step()                                # same failure after a success is news again
+        self.assertEqual(sum("frame error" in l for l in self.lines()), 2)
+
+    def test_an_oserror_while_building_a_frame_is_not_a_serial_error(self):
+        port = FakePort()
+        self.ports = [port]
+        b = self.make(sampler=BoomSampler(OSError("launchctl vanished")))
+        b.step()
+        self.assertIs(b.ser, port)
+        self.assertEqual(self.connects, 1)
+        self.assertTrue(any("frame error" in l for l in self.lines()))
+
+    def test_config_is_reloaded_every_thirty_seconds(self):
+        self.ports = [FakePort()]
+        b = self.make(interval=5.0)
+        base = self.loads                       # the constructor loaded once
+        for _ in range(6):                      # 25 s of steps: no reload yet
+            b.step()
+        self.assertEqual(self.loads, base)
+        for _ in range(2):
+            b.step()                            # past 30 s
+        self.assertEqual(self.loads, base + 1)
+
+    def test_daily_housekeeping_runs_once_a_day_even_when_it_fails(self):
+        self.ports = [FakePort()]
+        calls = []
+
+        def daily(tz):
+            calls.append(tz)
+            raise PermissionError("history is locked")
+
+        b = self.make(daily=daily, interval=5.0)
+        b.step()
+        b.step()
+        self.assertEqual(len(calls), 1)         # not retried every step
+        self.assertEqual(len(b.ser.writes), 2)  # and frames kept flowing
+        self.assertEqual(sum("maintenance error" in l for l in self.lines()), 1)
+        self.clock.t += 86400
+        b.step()
+        self.assertEqual(len(calls), 2)          # next day
+
+    def test_default_housekeeping_prunes_and_trims_the_log(self):
+        calls = []
+        real = (activity.prune, activity.truncate_if_large)
+        activity.prune = lambda **kw: calls.append(("prune", kw))
+        activity.truncate_if_large = lambda path, **kw: calls.append(("trim", path))
+        try:
+            bridge.Bridge._daily_housekeeping(3600)
+        finally:
+            activity.prune, activity.truncate_if_large = real
+        self.assertEqual(calls, [("prune", {"tz": 3600}), ("trim", bridge.LOG)])
+
+    def test_verbose_prints_the_frame_and_echoes_firmware_output(self):
+        port = FakePort(echo=b"sprite alloc failed\n")
+        self.ports = [port]
+        b = self.make(verbose=True)
+        b.step()
+        text = self.out.getvalue()
+        self.assertIn('> {"t":1700000000', text)
+        self.assertIn("sprite alloc failed", text)
+
+    def test_quiet_mode_drains_without_printing(self):
+        port = FakePort(echo=b"noise\n")
+        self.ports = [port]
+        self.make().step()
+        self.assertNotIn("noise", self.out.getvalue())
+        self.assertEqual(port.echo, b"")
+
+    def test_handshake_flag_is_passed_to_connect(self):
+        seen = []
+        bridge.connect = lambda port, rejected, check=True, clock=time.time: seen.append(check) or (None, None)
+        self.make(handshake=False).step()
+        self.make(handshake=True).step()
+        self.assertEqual(seen, [False, True])
+
+    def test_keyboard_interrupt_is_not_swallowed(self):
+        class Stop(FakePort):
+            def write(self, data):
+                raise KeyboardInterrupt
+
+        self.ports = [Stop()]
+        with self.assertRaises(KeyboardInterrupt):
+            self.make().step()
+
+    def test_main_runs_until_interrupted(self):
+        steps = []
+        real_step, real_sampler, real_act, real_ensure = (
+            bridge.Bridge.step, bridge.sysstats.Sampler, bridge.activity.Activity,
+            bridge.cydconfig.ensure)
+
+        def fake_step(self):
+            steps.append(self)
+            if len(steps) == 3:
+                raise KeyboardInterrupt
+
+        bridge.Bridge.step = fake_step
+        bridge.sysstats.Sampler = lambda: FakeSampler([])
+        bridge.activity.Activity = FakeActivity
+        bridge.cydconfig.ensure = lambda: None
+        try:
+            bridge.main(["--interval", "2", "--no-handshake", "-v", "--port", "/dev/x"])
+        finally:
+            (bridge.Bridge.step, bridge.sysstats.Sampler, bridge.activity.Activity,
+             bridge.cydconfig.ensure) = real_step, real_sampler, real_act, real_ensure
+        self.assertEqual(len(steps), 3)
+        b = steps[0]
+        self.assertEqual((b.interval, b.handshake, b.verbose, b.port), (2.0, False, True, "/dev/x"))
+
+
 if __name__ == "__main__":
     unittest.main()
