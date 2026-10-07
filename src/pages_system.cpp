@@ -61,21 +61,27 @@ void drawActivity(Canvas& c, int64_t now) {
     c.text(F_SANS12, DIM, "No activity data yet", 160, 130, BC_DATUM);
     return;
   }
-  char buf[32];
-  c.text(F_SANS9, DIM, "Today", 16, 48);
-  snprintf(buf, sizeof buf, "$%.2f", a.today);
-  c.text(F_SANSB24, IVORY, buf, 16, 95);
-
-  snprintf(buf, sizeof buf, "%d session%s", a.n, a.n == 1 ? "" : "s");
-  c.text(F_SANSB12, IVORY, buf, 304, 66, BR_DATUM);
+  char buf[32], cost[16], sess[24], last[32];
+  snprintf(cost, sizeof cost, "$%.2f", a.today);
+  snprintf(sess, sizeof sess, "%d session%s", a.n, a.n == 1 ? "" : "s");
   if (a.last < 0) {
-    strcpy(buf, "no activity yet");
+    strcpy(last, "no activity yet");
   } else {
     char ago[16];
     fmtAgo(a.last, ago, sizeof ago);
-    snprintf(buf, sizeof buf, "last active %s", ago);
+    snprintf(last, sizeof last, "last active %s", ago);
   }
-  c.text(F_SANS9, DIM, buf, 304, 86, BR_DATUM);
+
+  // The cost shares a row with the right-hand text, so step the font down as it grows.
+  int rightW = max(c.width(F_SANSB12, sess), c.width(F_SANS9, last));
+  const GFXfont* costFont = F_SANSB24;
+  if (16 + c.width(costFont, cost) + 12 > 304 - rightW) costFont = F_SANSB18;
+  if (16 + c.width(costFont, cost) + 12 > 304 - rightW) costFont = F_SANSB12;
+
+  c.text(F_SANS9, DIM, "Today", 16, 48);
+  c.text(costFont, IVORY, cost, 16, 95);
+  c.text(F_SANSB12, IVORY, sess, 304, 66, BR_DATUM);
+  c.text(F_SANS9, DIM, last, 304, 86, BR_DATUM);
 
   c.text(F_SANS9, DIM, "Weekly allowance used per day", 16, 116);
 
