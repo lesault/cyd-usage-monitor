@@ -90,19 +90,22 @@ def _began_today(first, today, tz):
     return day_index(first["ts"] - dur, tz) >= today
 
 
-def summarize(rows, now, tz):
-    """Return {"idle": secs|None, "today": usd, "n": sessions, "days": [7 floats]}."""
-    rows = sorted(rows, key=lambda r: r["ts"])
-    today = day_index(now, tz)
-
-    # Last real change: heartbeat rows with identical values don't count.
-    last_change, seen = None, {}
-    for r in rows:
+def last_change(rows):
+    """Timestamp of the last real change: heartbeat rows with identical values don't count."""
+    last, seen = None, {}
+    for r in sorted(rows, key=lambda r: r["ts"]):
         sig = (r.get("cost"), r.get("la"), r.get("lr"), r.get("s"), r.get("w"))
         sid = r.get("sid", "")
         if seen.get(sid) != sig:
-            last_change = r["ts"]
+            last = r["ts"]
             seen[sid] = sig
+    return last
+
+
+def aggregate(rows, now, tz):
+    """Cost today, sessions today and per-day weekly usage: {"today", "n", "days"}."""
+    rows = sorted(rows, key=lambda r: r["ts"])
+    today = day_index(now, tz)
 
     # Cost today: cumulative per-session cost minus where that session stood before today.
     by_sid = {}
@@ -138,32 +141,108 @@ def summarize(rows, now, tz):
                 days[idx] += (w - prev) if w >= prev else w
         prev = w
 
-    return {
-        "idle": None if last_change is None else max(0, int(now - last_change)),
-        "today": round(total, 2),
-        "n": n,
-        "days": [round(d, 1) for d in days],
-    }
+    return {"today": round(total, 2), "n": n, "days": [round(d, 1) for d in days]}
+
+
+def idle_secs(last, now):
+    return None if last is None else max(0, int(now - last))
+
+
+def summarize(rows, now, tz):
+    """Return {"idle": secs|None, "today": usd, "n": sessions, "days": [7 floats]}."""
+    out = aggregate(rows, now, tz)
+    out["idle"] = idle_secs(last_change(rows), now)
+    return out
+
+
+def capped_append(path, text, max_bytes=64 * 1024):
+    """Append text to a diagnostic log, dropping the oldest half once it passes max_bytes."""
+    try:
+        if os.path.getsize(path) > max_bytes:
+            with open(path, "rb") as f:
+                f.seek(-max_bytes // 2, os.SEEK_END)
+                tail = f.read().split(b"\n", 1)[-1]  # start on a whole line
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(tail)
+            os.replace(tmp, path)
+    except OSError:
+        pass
+    with open(path, "a") as f:
+        f.write(text)
+
+
+def truncate_if_large(path, max_bytes=1024 * 1024):
+    """Empty a log that something else holds open (launchd's stdout) once it gets big."""
+    try:
+        if os.path.getsize(path) > max_bytes:
+            os.truncate(path, 0)
+    except OSError:
+        pass
 
 
 class Activity:
-    """Caches the parsed history until the file changes."""
+    """Keeps the parsed history in memory, reading only what was appended since last time."""
 
     def __init__(self, path=HISTORY):
         self.path = path
-        self._key = None
         self._rows = []
+        self._ino = None
+        self._pos = 0          # bytes consumed so far (always ends on a newline)
+        self._version = 0      # bumped whenever the rows change
+        self._last = None      # last_change(), cached for _last_v
+        self._last_v = None
+        self._agg = None       # ((version, today, tz), aggregate) cache
+
+    def _reset(self):
+        self._rows, self._pos = [], 0
+        self._version += 1
 
     def rows(self):
         try:
             st = os.stat(self.path)
-            key = (st.st_mtime_ns, st.st_size)
         except OSError:
-            key = None
-        if key != self._key:
-            self._rows = load(self.path)
-            self._key = key
+            if self._rows or self._pos:
+                self._reset()
+            self._ino = None
+            return self._rows
+        if st.st_ino != self._ino or st.st_size < self._pos:  # replaced (pruned) or truncated
+            self._reset()
+            self._ino = st.st_ino
+        if st.st_size > self._pos:
+            try:
+                with open(self.path, "rb") as f:
+                    f.seek(self._pos)
+                    chunk = f.read()
+            except OSError:
+                return self._rows
+            end = chunk.rfind(b"\n") + 1  # leave a half-written last line for next time
+            if end:
+                new = []
+                for line in chunk[:end].decode(errors="replace").splitlines():
+                    try:
+                        r = json.loads(line)
+                        int(r["ts"])
+                        new.append(r)
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                self._pos += end
+                if new:
+                    seq = [r["ts"] for r in ([self._rows[-1]] if self._rows else []) + new]
+                    ordered = all(x <= y for x, y in zip(seq, seq[1:]))
+                    self._rows.extend(new)
+                    if not ordered:
+                        self._rows.sort(key=lambda r: r["ts"])
+                    self._version += 1
         return self._rows
 
     def summary(self, now, tz):
-        return summarize(self.rows(), now, tz)
+        rows = self.rows()
+        if self._last_v != self._version:
+            self._last, self._last_v = last_change(rows), self._version
+        key = (self._version, day_index(now, tz), tz)
+        if self._agg is None or self._agg[0] != key:
+            self._agg = (key, aggregate(rows, now, tz))
+        out = dict(self._agg[1])
+        out["idle"] = idle_secs(self._last, now)
+        return out

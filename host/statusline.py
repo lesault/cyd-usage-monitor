@@ -108,8 +108,7 @@ def main():
         win = window(raw, key)
         if win is None:
             # Claude Code sometimes omits a window; keep the last one until it resets.
-            with open(os.path.join(DIR, "missing.log"), "a") as f:
-                f.write("%d missing %s\n" % (now, key))
+            activity.capped_append(os.path.join(DIR, "missing.log"), "%d missing %s\n" % (now, key))
             old = prev.get(out)
             if old and old["r"] > now:
                 win = old
@@ -118,9 +117,10 @@ def main():
             # value racing a fresher one: keep the higher and log it for diagnosis.
             old = prev.get(out)
             if old and old["r"] == win["r"] and old["p"] > win["p"]:
-                with open(os.path.join(DIR, "regress.log"), "a") as f:
-                    f.write("%d %s sid=%s sent=%s kept=%s\n"
-                            % (now, key, str(raw.get("session_id", ""))[:8], win["p"], old["p"]))
+                activity.capped_append(
+                    os.path.join(DIR, "regress.log"),
+                    "%d %s sid=%s sent=%s kept=%s\n"
+                    % (now, key, str(raw.get("session_id", ""))[:8], win["p"], old["p"]))
                 win = old
         wins[out] = win
 

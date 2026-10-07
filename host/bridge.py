@@ -21,6 +21,7 @@ import rules
 import sysstats
 
 STATE = os.path.expanduser("~/.claude-cyd/state.json")
+LOG = os.path.expanduser("~/.claude-cyd/bridge.log")
 CONFIG_RELOAD_S = 30
 
 
@@ -90,7 +91,7 @@ def main():
     cfg, cfg_t = cydconfig.load(), time.time()
     sampler, act = sysstats.Sampler(), activity.Activity()
     last_prune_day = None
-    last_err = None
+    last_err = last_serial_err = None
     ser = None
     while True:
         try:
@@ -101,6 +102,7 @@ def main():
                     continue
                 ser = open_port(path)
                 print("connected:", path, flush=True)
+                last_serial_err = None
 
             if time.time() - cfg_t > CONFIG_RELOAD_S:
                 cfg, cfg_t = cydconfig.load(), time.time()
@@ -109,6 +111,7 @@ def main():
             if today != last_prune_day:
                 activity.prune(tz=tz)
                 last_prune_day = today
+                activity.truncate_if_large(LOG)
 
             line = json.dumps(build_frame(cfg, sampler, act), separators=(",", ":")) + "\n"
             ser.write(line.encode())
@@ -121,7 +124,10 @@ def main():
                 ser.read(512)  # drain firmware logs
             time.sleep(args.interval)
         except (serial.SerialException, OSError) as e:
-            print("serial error:", e, "- retrying", flush=True)
+            msg = "serial error: %s - retrying" % (e,)
+            if msg != last_serial_err:  # a busy or flaky port would otherwise log every 2 s
+                print(msg, flush=True)
+                last_serial_err = msg
             try:
                 if ser:
                     ser.close()

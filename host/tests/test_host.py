@@ -342,5 +342,200 @@ class BridgeFrameTests(unittest.TestCase):
             self.assertEqual(frame["al"], [])
 
 
+class IncrementalActivityTests(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self.d.name, "h.jsonl")
+        self.loads = 0
+        self._load = activity.load
+
+        def counting(path=activity.HISTORY):
+            self.loads += 1
+            return self._load(path)
+
+        activity.load = counting
+
+    def tearDown(self):
+        activity.load = self._load
+        self.d.cleanup()
+
+    def append(self, *rows, partial=None):
+        with open(self.p, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+            if partial:
+                f.write(partial)
+
+    def test_appends_are_read_without_a_full_reload(self):
+        a = activity.Activity(self.p)
+        self.assertEqual(a.rows(), [])
+        self.append(row(NOW - 100, cost=1.0))
+        self.assertEqual(len(a.rows()), 1)
+        self.append(row(NOW - 50, cost=2.0), row(NOW - 40, cost=3.0))
+        self.assertEqual([r["cost"] for r in a.rows()], [1.0, 2.0, 3.0])
+        self.assertEqual(self.loads, 0)
+
+    def test_half_written_line_waits_for_its_newline(self):
+        a = activity.Activity(self.p)
+        self.append(row(NOW - 100), partial='{"ts": %d, "si' % (NOW - 50))
+        self.assertEqual(len(a.rows()), 1)
+        with open(self.p, "a") as f:
+            f.write('d": "a", "cost": 1.0}\n')
+        self.assertEqual(len(a.rows()), 2)
+
+    def test_out_of_order_and_corrupt_rows(self):
+        a = activity.Activity(self.p)
+        self.append(row(NOW - 10))
+        a.rows()
+        self.append(row(NOW - 90), row(NOW - 30))
+        with open(self.p, "a") as f:
+            f.write("garbage\n")
+        self.assertEqual([r["ts"] for r in a.rows()], [NOW - 90, NOW - 30, NOW - 10])
+
+    def test_prune_replacing_the_file_is_noticed(self):
+        a = activity.Activity(self.p)
+        self.append(row(NOW - 20 * DAY), row(NOW - 3600))
+        self.assertEqual(len(a.rows()), 2)
+        activity.prune(self.p, now=NOW, tz=0)
+        self.assertEqual([r["ts"] for r in a.rows()], [NOW - 3600])
+        self.append(row(NOW - 60))
+        self.assertEqual(len(a.rows()), 2)
+
+    def test_deleted_file_empties_the_cache(self):
+        a = activity.Activity(self.p)
+        self.append(row(NOW - 60))
+        self.assertEqual(len(a.rows()), 1)
+        os.remove(self.p)
+        self.assertEqual(a.rows(), [])
+
+    def test_summary_matches_a_full_summarize(self):
+        a = activity.Activity(self.p)
+        rows = [row(D0 - 3600, "a", 3.0, w=10), row(D0 + 100, "a", 4.0, w=12),
+                row(D0 + 200, "b", 0.5, w=13), row(D0 + 300, "b", 1.5, w=15)]
+        for i, r in enumerate(rows):
+            self.append(r)
+            got = a.summary(NOW, 0)
+            self.assertEqual(got, activity.summarize(rows[:i + 1], NOW, 0), i)
+
+    def test_summary_is_cached_until_something_changes(self):
+        calls = []
+        real = activity.aggregate
+        activity.aggregate = lambda *a: calls.append(a) or real(*a)
+        try:
+            a = activity.Activity(self.p)
+            self.append(row(NOW - 100, cost=1.0))
+            first = a.summary(NOW, 0)
+            again = a.summary(NOW + 5, 0)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(again["idle"], first["idle"] + 5)  # idle still moves with the clock
+            self.append(row(NOW - 50, cost=2.0))
+            a.summary(NOW + 10, 0)
+            self.assertEqual(len(calls), 2)       # new data
+            a.summary(NOW + DAY, 0)
+            self.assertEqual(len(calls), 3)       # new day
+        finally:
+            activity.aggregate = real
+
+
+class LogCapTests(unittest.TestCase):
+    def test_capped_append_keeps_the_newest_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.log")
+            for i in range(500):
+                activity.capped_append(p, "line %04d\n" % i, max_bytes=1000)
+            self.assertLess(os.path.getsize(p), 1100)
+            with open(p) as f:
+                lines = f.read().splitlines()
+            self.assertEqual(lines[-1], "line 0499")
+            self.assertTrue(all(l.startswith("line ") and len(l) == 9 for l in lines))
+
+    def test_truncate_if_large(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "b.log")
+            with open(p, "w") as f:
+                f.write("x" * 50)
+            activity.truncate_if_large(p, max_bytes=100)
+            self.assertEqual(os.path.getsize(p), 50)
+            activity.truncate_if_large(p, max_bytes=10)
+            self.assertEqual(os.path.getsize(p), 0)
+            activity.truncate_if_large(os.path.join(d, "missing"), max_bytes=1)  # no error
+
+
+class FakePsutil:
+    @staticmethod
+    def cpu_percent(_):
+        return 5.0
+
+    @staticmethod
+    def virtual_memory():
+        return types.SimpleNamespace(total=100, available=40)
+
+    @staticmethod
+    def disk_usage(_):
+        return types.SimpleNamespace(percent=50, free=10e9, total=20e9)
+
+    @staticmethod
+    def net_io_counters(pernic=True):
+        return {"en0": types.SimpleNamespace(bytes_recv=0, bytes_sent=0)}
+
+    @staticmethod
+    def boot_time():
+        return time.time() - 1000
+
+
+class SamplerTests(unittest.TestCase):
+    def setUp(self):
+        import sysstats
+        self.sysstats = sysstats
+        self.old = (sysstats.psutil, sysstats.service_up, sysstats.CACHE_S, sysstats.SERVICE_S)
+        sysstats.psutil = FakePsutil
+        sysstats.CACHE_S = 0
+        sysstats.SERVICE_S = 0.05
+
+    def tearDown(self):
+        (self.sysstats.psutil, self.sysstats.service_up,
+         self.sysstats.CACHE_S, self.sysstats.SERVICE_S) = self.old
+
+    def test_slow_service_check_does_not_block_snapshots(self):
+        gate = threading.Event()
+        calls = []
+
+        def service_up(label):
+            calls.append(label)
+            if len(calls) > 1:   # the first look is synchronous; later ones are wedged
+                gate.wait(5)
+            return 1
+
+        self.sysstats.service_up = service_up
+        s = self.sysstats.Sampler()
+        self.assertEqual(s.snapshot(["a"])["svc"], [1])  # first frame is complete
+        time.sleep(0.1)
+        t0 = time.time()
+        snap = s.snapshot(["a"])
+        self.assertLess(time.time() - t0, 0.5)           # background refresh, not inline
+        self.assertEqual(snap["svc"], [1])               # last known state still reported
+        self.assertEqual(len(calls), 2)
+        s.snapshot(["a"])
+        self.assertEqual(len(calls), 2)                  # only one refresh in flight
+        gate.set()
+
+    def test_background_refresh_updates_the_state(self):
+        state = {"up": 1}
+        self.sysstats.service_up = lambda label: state["up"]
+        s = self.sysstats.Sampler()
+        self.assertEqual(s.snapshot(["a"])["svc"], [1])
+        state["up"] = 0
+        deadline = time.time() + 3
+        while time.time() < deadline and s.snapshot(["a"])["svc"] != [0]:
+            time.sleep(0.05)
+        self.assertEqual(s.snapshot(["a"])["svc"], [0])
+
+    def test_changed_service_list_is_checked_straight_away(self):
+        self.sysstats.service_up = lambda label: 0 if label == "bad" else 1
+        s = self.sysstats.Sampler()
+        s.snapshot(["a"])
+        self.assertEqual(s.snapshot(["a", "bad"])["svc"], [1, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

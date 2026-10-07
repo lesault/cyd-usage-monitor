@@ -1,6 +1,7 @@
 """Mac health sampler for the CYD: CPU, memory, disk, network, uptime, services."""
 import os
 import subprocess
+import threading
 import time
 
 import psutil
@@ -41,7 +42,15 @@ class Sampler:
         psutil.cpu_percent(None)  # prime: the first call has no interval to measure
         self._net, self._net_t = _net_bytes(), time.time()
         self._svc, self._svc_t, self._svc_labels = [], 0.0, None
+        self._svc_busy = False  # a background refresh is running
         self._cache, self._cache_t = None, 0.0
+
+    def _refresh_services(self, labels):
+        try:
+            up = [service_up(s) for s in labels]
+            self._svc, self._svc_t, self._svc_labels = up, time.time(), labels
+        finally:
+            self._svc_busy = False
 
     def snapshot(self, services):
         """Return the sys dict. Keys "total" and "free_b" are for local rules only."""
@@ -58,9 +67,13 @@ class Sampler:
         tx_kbs = max(0, (tx - self._net[1]) / dt / 1024)
         self._net, self._net_t = (rx, tx), now
 
-        if self._svc_labels != services or now - self._svc_t >= SERVICE_S:
-            self._svc = [service_up(s) for s in services]
-            self._svc_t, self._svc_labels = now, list(services)
+        # launchctl can take seconds when a job is wedged, so after the first look (or a
+        # config change) re-check in the background and keep sending the last known state.
+        if self._svc_labels != services:
+            self._refresh_services(services)
+        elif now - self._svc_t >= SERVICE_S and not self._svc_busy:
+            self._svc_busy = True
+            threading.Thread(target=self._refresh_services, args=(services,), daemon=True).start()
 
         self._cache = {
             "cpu": round(psutil.cpu_percent(None)),

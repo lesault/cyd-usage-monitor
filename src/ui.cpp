@@ -33,6 +33,8 @@ bool g_h24 = true;
 static bool dirty = true;
 static bool dimmed = false;
 static uint32_t lastTouch = 0, lastRender = 0, wakeUntil = 0;
+static int64_t lastRenderSec = -1;  // epoch second of the last render
+static uint32_t lastRenderHalf = 0;  // millis()/500 at the last render
 
 static bool autoActive = false;
 static int autoIdx = 0;
@@ -407,9 +409,20 @@ void uiTick() {
     dirty = true;
   }
 
-  if (dirty || now - lastRender >= (page == P_SCENE ? 250UL : 500UL)) {
+  // Redraw on new data or touch, when the on-screen second ticks (clock, countdowns), and at
+  // the rate of whatever animates: the scene's drips, or the Home page's near-limit border.
+  int64_t sec = nowEpoch();
+  uint32_t half = now / 500;
+  bool blink = page == P_HOME && ((g_data.s.valid && g_data.s.pct >= 95) ||
+                                  (g_data.w.valid && g_data.w.pct >= 95));
+  bool due = sec != lastRenderSec;
+  if (page == P_SCENE) due = now - lastRender >= 250;
+  else if (blink && half != lastRenderHalf) due = true;
+  if (dirty || due) {
     render();
     lastRender = now;
+    lastRenderSec = sec;
+    lastRenderHalf = half;
     dirty = false;
   }
 }
