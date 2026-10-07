@@ -18,6 +18,14 @@ def in_night(local_minutes, window):
     return local_minutes >= start or local_minutes < end  # spans midnight
 
 
+def _raised(win, now, threshold):
+    """True for a live window ({"p", "r"}) at or over the threshold; junk counts as not raised."""
+    try:
+        return win["r"] > now and win["p"] >= threshold
+    except (TypeError, KeyError):
+        return False
+
+
 def compute_alerts(state, sysinfo, cfg, now):
     """Return the list of active alert codes.
 
@@ -26,11 +34,10 @@ def compute_alerts(state, sysinfo, cfg, now):
     """
     al = []
     th = cfg["alerts"]
-    s = (state or {}).get("s")
-    w = (state or {}).get("w")
-    if s and s["r"] > now and s["p"] >= th["sess"]:
+    state = state if isinstance(state, dict) else {}
+    if _raised(state.get("s"), now, th["sess"]):
         al.append("sess")
-    if w and w["r"] > now and w["p"] >= th["week"]:
+    if _raised(state.get("w"), now, th["week"]):
         al.append("week")
     if sysinfo.get("total") and 100.0 * sysinfo["free_b"] / sysinfo["total"] < th["disk_free_pct"]:
         al.append("disk")

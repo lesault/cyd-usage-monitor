@@ -34,9 +34,10 @@ def find_port(explicit):
 def load_state():
     try:
         with open(STATE) as f:
-            return json.load(f)
+            state = json.load(f)
     except (OSError, ValueError):
         return None
+    return state if isinstance(state, dict) else None
 
 
 def build_frame(cfg, sampler, act, now=None):
@@ -89,6 +90,7 @@ def main():
     cfg, cfg_t = cydconfig.load(), time.time()
     sampler, act = sysstats.Sampler(), activity.Activity()
     last_prune_day = None
+    last_err = None
     ser = None
     while True:
         try:
@@ -129,6 +131,12 @@ def main():
             time.sleep(2)
         except KeyboardInterrupt:
             break
+        except Exception as e:  # a bad frame must not take the bridge down (launchd would loop it)
+            msg = "frame error: %r" % (e,)
+            if msg != last_err:
+                print(msg, flush=True)
+                last_err = msg
+            time.sleep(args.interval)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,27 @@
-"""Run: .venv/bin/python -m unittest discover -s host/tests -v"""
+"""Run: python3 -m unittest discover -s host/tests -v"""
 import json
 import os
 import sys
 import tempfile
+import threading
+import time
+import types
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# bridge/sysstats import hardware-facing packages that the tests never touch.
+for _name in ("serial", "psutil"):
+    try:
+        __import__(_name)
+    except ImportError:
+        sys.modules[_name] = types.ModuleType(_name)
+
 import activity  # noqa: E402
+import bridge  # noqa: E402
 import cydconfig  # noqa: E402
 import rules  # noqa: E402
+import statusline  # noqa: E402
 
 DAY = 86400
 D0 = 20000 * DAY  # midnight UTC of some day; tz=0 in these tests
@@ -127,6 +139,207 @@ class ConfigTests(unittest.TestCase):
             with open(p, "w") as f:
                 f.write("{oops")
             self.assertEqual(cydconfig.load(p)["idle_min"], 10)
+
+
+    def test_wrong_types_fall_back_per_setting(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                json.dump({"idle_min": "ten", "night": "23:00", "services": "x",
+                           "alerts": {"sess": "high", "week": 80}}, f)
+            cfg = cydconfig.load(p)
+            self.assertEqual(cfg["idle_min"], 10)
+            self.assertEqual(cfg["night"], ["23:00", "07:00"])
+            self.assertEqual(cfg["services"], ["com.user.claude-cyd"])
+            self.assertEqual(cfg["alerts"], {"sess": 90, "week": 80, "disk_free_pct": 10})
+
+    def test_top_level_not_an_object(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                f.write("[1, 2]")
+            self.assertEqual(cydconfig.load(p), cydconfig.DEFAULTS)
+
+    def test_night_validation(self):
+        for bad in (["25:00", "07:00"], ["23:00"], ["a", "b"], [1, 2], 5):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "c.json")
+                with open(p, "w") as f:
+                    json.dump({"night": bad}, f)
+                self.assertEqual(cydconfig.load(p)["night"], ["23:00", "07:00"], bad)
+
+    def test_night_can_be_disabled_or_changed(self):
+        for val in (None, ["22:30", "6:15"]):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "c.json")
+                with open(p, "w") as f:
+                    json.dump({"night": val}, f)
+                self.assertEqual(cydconfig.load(p)["night"], val)
+
+    def test_services_capped_and_filtered(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "c.json")
+            with open(p, "w") as f:
+                json.dump({"services": ["a", 5, "", None, "b", "c", "d", "e", "f"]}, f)
+            self.assertEqual(cydconfig.load(p)["services"], ["a", "b", "c", "d"])
+            self.assertEqual(len(cydconfig.load(p)["services"]), cydconfig.MAX_SERVICES)
+
+    def test_idle_min_must_be_positive(self):
+        for bad in (0, -5, True):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "c.json")
+                with open(p, "w") as f:
+                    json.dump({"idle_min": bad}, f)
+                self.assertEqual(cydconfig.load(p)["idle_min"], 10, bad)
+
+
+class RulesRobustnessTests(unittest.TestCase):
+    def test_malformed_state_does_not_raise(self):
+        cfg = cydconfig.load("/nonexistent")
+        for state in ({"s": {"p": 99}}, {"s": {"p": "x", "r": 5000}}, {"s": 7}, [], "junk"):
+            self.assertEqual(rules.compute_alerts(state, {}, cfg, 1000), [], state)
+
+
+class CostBaseTests(unittest.TestCase):
+    def test_new_session_today_counts_cost_from_first_row(self):
+        # First row is already $1.50 in, but dur proves the session began today.
+        rows = [dict(row(D0 + 3600, "a", 1.5), dur=900), dict(row(D0 + 7200, "a", 2.0), dur=4500)]
+        self.assertAlmostEqual(activity.summarize(rows, NOW, 0)["today"], 2.0)
+
+    def test_session_older_than_history_keeps_conservative_base(self):
+        # dur says it began yesterday, but we have no earlier row: only count growth.
+        rows = [dict(row(D0 + 3600, "a", 5.0), dur=2 * 86400), dict(row(D0 + 7200, "a", 5.4), dur=2 * 86400 + 3600)]
+        self.assertAlmostEqual(activity.summarize(rows, NOW, 0)["today"], 0.4)
+
+    def test_missing_or_bad_dur_is_conservative(self):
+        for dur in (None, -5, "x"):
+            rows = [dict(row(D0 + 100, "a", 5.0), dur=dur), dict(row(D0 + 200, "a", 5.4), dur=dur)]
+            self.assertAlmostEqual(activity.summarize(rows, NOW, 0)["today"], 0.4, msg=dur)
+
+    def test_earlier_row_still_wins(self):
+        rows = [dict(row(D0 - 600, "a", 3.0), dur=100), dict(row(D0 + 600, "a", 4.0), dur=1300)]
+        self.assertAlmostEqual(activity.summarize(rows, NOW, 0)["today"], 1.0)
+
+    def test_timezone_respected(self):
+        # 23:30 UTC is already "today" at UTC+1; the session began 10 minutes earlier, also today.
+        ts = D0 - 1800
+        rows = [dict(row(ts, "a", 1.0), dur=600), dict(row(ts + 60, "a", 1.2), dur=660)]
+        self.assertAlmostEqual(activity.summarize(rows, D0 + 3600, 3600)["today"], 1.2)
+
+
+class HistoryLockTests(unittest.TestCase):
+    def test_prune_waits_for_the_lock(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "h.jsonl")
+            with open(p, "w") as f:
+                f.write(json.dumps(row(NOW - 20 * DAY)) + "\n")
+            done = threading.Event()
+
+            def run():
+                activity.prune(p, now=NOW, tz=0)
+                done.set()
+
+            with activity.lock(p):
+                t = threading.Thread(target=run)
+                t.start()
+                self.assertFalse(done.wait(0.3))  # blocked while we hold the lock
+            self.assertTrue(done.wait(5))
+            t.join()
+            self.assertEqual(activity.load(p), [])
+
+    def test_prune_does_not_lose_concurrent_appends(self):
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = statusline.DIR
+            statusline.DIR = d
+            try:
+                p = os.path.join(d, "history.jsonl")
+                now = int(time.time())
+                state = {"cost": 0.0, "la": 0, "lr": 0, "s": None, "w": None, "dur": 0}
+                N = 150
+
+                def appender():
+                    for i in range(N):
+                        statusline.append_history(now + i, "sess", dict(state, cost=float(i)))
+
+                t = threading.Thread(target=appender)
+                t.start()
+                while t.is_alive():
+                    with activity.lock(p):  # plant an expired row so every prune rewrites
+                        with open(p, "a") as f:
+                            f.write(json.dumps(row(now - 30 * DAY)) + "\n")
+                    activity.prune(p, now=now, tz=0)
+                t.join()
+                activity.prune(p, now=now, tz=0)
+                self.assertEqual(len(activity.load(p)), N)
+            finally:
+                statusline.DIR = old_dir
+
+
+class StatuslineHistoryTests(unittest.TestCase):
+    def test_unchanged_rows_are_deduped_until_the_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = statusline.DIR
+            statusline.DIR = d
+            try:
+                st = {"cost": 1.0, "la": 1, "lr": 0, "s": None, "w": None, "dur": 5}
+                statusline.append_history(1000, "abc", st)
+                statusline.append_history(1030, "abc", st)                        # duplicate
+                statusline.append_history(1000 + statusline.HEARTBEAT, "abc", st)  # heartbeat
+                statusline.append_history(1040, "abc", dict(st, cost=1.1))         # changed
+                rows = activity.load(os.path.join(d, "history.jsonl"))
+                self.assertEqual([r["ts"] for r in rows], [1000, 1040, 1000 + statusline.HEARTBEAT])
+            finally:
+                statusline.DIR = old_dir
+
+
+class FakeSampler:
+    def __init__(self, services):
+        self.services = services
+
+    def snapshot(self, services):
+        n = len(services)
+        return {"cpu": 99, "mem": 99, "disk": 99, "free": 9999, "up": 99999999, "rx": 99999,
+                "tx": 99999, "svc": [1] * n, "svn": ["x" * 12] * n, "total": 10, "free_b": 5}
+
+
+class FakeActivity:
+    def summary(self, now, tz):
+        return {"idle": 5, "today": 1234.56, "n": 12, "days": [100.0] * 7}
+
+
+class BridgeFrameTests(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.old = bridge.STATE
+        bridge.STATE = os.path.join(self.d.name, "state.json")
+
+    def tearDown(self):
+        bridge.STATE = self.old
+        self.d.cleanup()
+
+    def write_state(self, text):
+        with open(bridge.STATE, "w") as f:
+            f.write(text)
+
+    def test_worst_case_frame_fits_the_firmware_buffer(self):
+        self.write_state(json.dumps({
+            "ts": 1, "s": {"p": 99.5, "r": 2000000000}, "w": {"p": 99.5, "r": 2000000000},
+            "m": "Sonnet 5.5 (1M context)", "c": 100, "cost": 12345.67, "dur": 99999999,
+            "la": 9999999, "lr": 9999999}))
+        cfg = cydconfig.load("/nonexistent")
+        cfg["services"] = ["svc%d" % i for i in range(20)]  # as if the config cap were bypassed
+        frame = bridge.build_frame(cfg, FakeSampler(cfg["services"]), FakeActivity(), now=1700000000)
+        line = json.dumps(frame, separators=(",", ":"))
+        self.assertLess(len(line), 1000)  # firmware buffer is 1024 incl. newline
+        self.assertLessEqual(len(frame["sys"]["svc"]), cydconfig.MAX_SERVICES)
+
+    def test_non_object_state_is_ignored(self):
+        cfg = cydconfig.load("/nonexistent")
+        for text in ("[1,2]", "null", "7", "{oops"):
+            self.write_state(text)
+            frame = bridge.build_frame(cfg, FakeSampler([]), FakeActivity(), now=1700000000)
+            self.assertNotIn("age", frame, text)
+            self.assertEqual(frame["al"], [])
 
 
 if __name__ == "__main__":

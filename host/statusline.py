@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+import activity
+
 DIR = os.path.expanduser("~/.claude-cyd")
 
 
@@ -45,7 +47,8 @@ HEARTBEAT = 120  # seconds between unchanged history rows
 def append_history(now, sid, state):
     """Append a row to history.jsonl when something changed (or as a heartbeat).
 
-    O_APPEND single writes keep concurrent Claude Code sessions from corrupting it.
+    O_APPEND single writes keep concurrent Claude Code sessions from corrupting it, and the
+    history lock stops the bridge's daily prune from dropping a row mid-rewrite.
     """
     row = {
         "ts": now, "sid": sid[:8], "cost": state["cost"], "la": state["la"], "lr": state["lr"],
@@ -54,6 +57,11 @@ def append_history(now, sid, state):
         "dur": state["dur"],
     }
     path = os.path.join(DIR, "history.jsonl")
+    with activity.lock(path):
+        _append_row(path, row, now)
+
+
+def _append_row(path, row, now):
     sig = ("cost", "la", "lr", "s", "w")
     try:
         with open(path, "rb") as f:

@@ -9,15 +9,17 @@
 static void readSerial() {
   static char buf[1024];
   static size_t n = 0;
+  static bool discard = false;  // inside an overlong line: skip to its newline
   while (Serial.available()) {
     char ch = Serial.read();
     if (ch == '\n') {
       buf[n] = 0;
-      if (n > 0 && parseFrame(buf)) uiMarkDirty();
+      if (!discard && n > 0 && parseFrame(buf)) uiMarkDirty();
       n = 0;
-    } else if (ch != '\r') {
+      discard = false;
+    } else if (ch != '\r' && !discard) {
       if (n < sizeof(buf) - 1) buf[n++] = ch;
-      else n = 0;  // overlong line: drop it
+      else discard = true;  // overlong line: drop all of it, not just the head
     }
   }
 }

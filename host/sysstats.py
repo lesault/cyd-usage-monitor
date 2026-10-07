@@ -5,6 +5,8 @@ import time
 
 import psutil
 
+from cydconfig import MAX_SERVICES
+
 CACHE_S = 4.5      # reuse a snapshot for this long (frames go out every ~5 s)
 SERVICE_S = 15.0   # how often to re-check launchd services
 
@@ -43,6 +45,7 @@ class Sampler:
 
     def snapshot(self, services):
         """Return the sys dict. Keys "total" and "free_b" are for local rules only."""
+        services = list(services)[:MAX_SERVICES]
         now = time.time()
         if self._cache and now - self._cache_t < CACHE_S:
             return self._cache
@@ -80,4 +83,8 @@ PUBLIC_KEYS = ("cpu", "mem", "disk", "free", "up", "rx", "tx", "svc", "svn")
 
 
 def public(sysinfo):
-    return {k: sysinfo[k] for k in PUBLIC_KEYS if k in sysinfo}
+    out = {k: sysinfo[k] for k in PUBLIC_KEYS if k in sysinfo}
+    for k in ("svc", "svn"):  # the firmware shows at most MAX_SERVICES (and its line buffer is finite)
+        if k in out:
+            out[k] = list(out[k])[:MAX_SERVICES]
+    return out
