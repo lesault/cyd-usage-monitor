@@ -152,7 +152,7 @@ def main():
     if not isinstance(raw, dict):  # not our payload: say something harmless and leave state alone
         print("claude")
         return
-    os.makedirs(DIR, exist_ok=True)
+    os.makedirs(DIR, mode=0o700, exist_ok=True)
     atomic_write(os.path.join(DIR, "raw.json"), text)
 
     now = int(time.time())

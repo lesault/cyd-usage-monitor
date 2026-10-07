@@ -88,6 +88,10 @@ def main():
     args = ap.parse_args()
 
     cydconfig.ensure()
+    try:
+        os.chmod(LOG, 0o600)  # launchd creates it world-readable if install.sh didn't
+    except OSError:
+        pass
     cfg, cfg_t = cydconfig.load(), time.time()
     sampler, act = sysstats.Sampler(), activity.Activity()
     last_prune_day = None

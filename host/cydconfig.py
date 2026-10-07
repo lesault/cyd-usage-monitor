@@ -62,7 +62,7 @@ def ensure(path=PATH):
     """Create the config file with defaults if it doesn't exist."""
     if os.path.exists(path):
         return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     with open(path, "w") as f:
         json.dump(DEFAULTS, f, indent=2)
         f.write("\n")

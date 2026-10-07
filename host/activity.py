@@ -33,7 +33,7 @@ def lock(path=HISTORY):
     f = None
     try:
         if fcntl is not None:
-            f = open(path + ".lock", "a")
+            f = os.fdopen(os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600), "w")
             fcntl.flock(f, fcntl.LOCK_EX)
     except OSError:
         if f:
@@ -73,7 +73,7 @@ def prune(path=HISTORY, now=None, tz=0, keep_days=KEEP_DAYS):
         if len(keep) == len(rows):
             return
         tmp = path + ".tmp"
-        with open(tmp, "w") as f:
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
             for r in keep:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
         os.replace(tmp, path)
@@ -163,12 +163,12 @@ def capped_append(path, text, max_bytes=64 * 1024):
                 f.seek(-max_bytes // 2, os.SEEK_END)
                 tail = f.read().split(b"\n", 1)[-1]  # start on a whole line
             tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
                 f.write(tail)
             os.replace(tmp, path)
     except OSError:
         pass
-    with open(path, "a") as f:
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:
         f.write(text)
 
 

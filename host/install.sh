@@ -9,32 +9,44 @@ SRC="${0:A:h}"
 DEST="$HOME/.claude-cyd"
 LABEL=com.user.claude-cyd
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
 
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
+# Private by default: usage and cost data live here.
 mkdir -p "$DEST" "$HOME/Library/LaunchAgents"
+chmod 700 "$DEST"
+for f in bridge.log missing.log regress.log history.jsonl history.jsonl.lock; do
+  [[ -e "$DEST/$f" ]] || : > "$DEST/$f"   # launchd creates its log world-readable if it's missing
+  chmod 600 "$DEST/$f"
+done
+
 [[ -x "$DEST/venv/bin/python" ]] || python3 -m venv "$DEST/venv"
-"$DEST/venv/bin/pip" install -q pyserial psutil
+"$DEST/venv/bin/pip" install -q --require-hashes -r "$SRC/requirements.txt"
 for f in bridge statusline cydconfig rules activity sysstats; do cp "$SRC/$f.py" "$DEST/"; done
 chmod +x "$DEST/statusline.py"
 "$DEST/venv/bin/python" "$DEST/cydconfig.py"  # writes a default config.json if missing
 
-sed -e "s#__PYTHON__#$DEST/venv/bin/python#" \
-    -e "s#__BRIDGE__#$DEST/bridge.py#" \
-    -e "s#__LOG__#$DEST/bridge.log#g" \
-    "$SRC/com.user.claude-cyd.plist.in" > "$PLIST"
+python3 "$SRC/install_helpers.py" plist "$SRC/com.user.claude-cyd.plist.in" \
+  "$DEST/venv/bin/python" "$DEST/bridge.py" "$DEST/bridge.log" > "$PLIST"
+plutil -lint "$PLIST" >/dev/null
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# bootout returns before the job is fully gone; bootstrapping too early fails with an I/O error.
+launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for _ in {1..20}; do
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+for attempt in {1..5}; do
+  launchctl bootstrap "$DOMAIN" "$PLIST" && break
+  [[ $attempt -eq 5 ]] && { echo "launchctl bootstrap failed" >&2; exit 1; }
+  sleep 1
+done
 
-cat <<EOF
+cat <<EOT
 Installed. Bridge log: $DEST/bridge.log   Config: $DEST/config.json
 
-Last step (once): add this to ~/.claude/settings.json so Claude Code feeds the display:
+Last step (once): merge this into ~/.claude/settings.json so Claude Code feeds the display:
 
-  "statusLine": {
-    "type": "command",
-    "command": "python3 $DEST/statusline.py",
-    "refreshInterval": 30
-  }
-EOF
+EOT
+python3 "$SRC/install_helpers.py" snippet "$DEST/statusline.py"

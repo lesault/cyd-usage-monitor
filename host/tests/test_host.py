@@ -20,6 +20,7 @@ for _name in ("serial", "psutil"):
 import activity  # noqa: E402
 import bridge  # noqa: E402
 import cydconfig  # noqa: E402
+import install_helpers  # noqa: E402
 import rules  # noqa: E402
 import statusline  # noqa: E402
 
@@ -647,6 +648,60 @@ class HistoryLoadTests(unittest.TestCase):
             self.assertEqual([r["ts"] for r in activity.load(p)], [123, 150])
             a = activity.Activity(p)
             self.assertEqual([r["ts"] for r in a.rows()], [123, 150])
+
+
+def mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
+class PrivateFileTests(unittest.TestCase):
+    def test_logs_lock_and_pruned_history_are_owner_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.log")
+            for i in range(200):
+                activity.capped_append(p, "line %d\n" % i, max_bytes=500)  # includes a rewrite
+            self.assertEqual(mode(p), 0o600)
+
+            h = os.path.join(d, "history.jsonl")
+            with open(h, "w") as f:
+                f.write(json.dumps(row(NOW - 20 * DAY)) + "\n" + json.dumps(row(NOW)) + "\n")
+            activity.prune(h, now=NOW, tz=0)
+            self.assertEqual(mode(h), 0o600)
+            self.assertEqual(mode(h + ".lock"), 0o600)
+
+
+class InstallHelperTests(unittest.TestCase):
+    TEMPLATE = os.path.join(os.path.dirname(__file__), "..", "com.user.claude-cyd.plist.in")
+
+    def test_plist_survives_awkward_paths(self):
+        import plistlib
+        py = "/Users/A & B/My <Dir>/#1/venv/bin/python"
+        bridge_py = "/Users/A & B/My <Dir>/#1/bridge.py"
+        log = "/Users/A & B/My <Dir>/#1/bridge.log"
+        with open(self.TEMPLATE) as f:
+            out = install_helpers.render_plist(f.read(), py, bridge_py, log)
+        plist = plistlib.loads(out.encode())
+        self.assertEqual(plist["ProgramArguments"], [py, bridge_py])
+        self.assertEqual(plist["StandardOutPath"], log)
+        self.assertEqual(plist["StandardErrorPath"], log)
+        self.assertNotIn("__", out)
+
+    def test_statusline_snippet_quotes_the_command(self):
+        import shlex
+        for path in ("/Users/me/.claude-cyd/statusline.py", "/Users/A B/it's here/statusline.py"):
+            snippet = json.loads(install_helpers.statusline_snippet(path))["statusLine"]
+            self.assertEqual(snippet["type"], "command")
+            self.assertEqual(shlex.split(snippet["command"]), ["python3", path])
+            self.assertEqual(snippet["refreshInterval"], 30)
+
+    def test_requirements_are_pinned_and_hashed(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "requirements.txt")) as f:
+            text = f.read()
+        for name in ("psutil", "pyserial"):
+            self.assertRegex(text, r"(?m)^%s==\d+(\.\d+)* \\$" % name)
+        pins = [l for l in text.splitlines() if "==" in l]
+        self.assertEqual(len(pins), 2)
+        self.assertGreaterEqual(text.count("--hash=sha256:"), 2)
 
 
 if __name__ == "__main__":
