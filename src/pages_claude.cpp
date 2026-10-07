@@ -1,4 +1,5 @@
 // Home, Forecast and Info: the Claude usage pages.
+#include "forecast.h"
 #include "model.h"
 #include "pages.h"
 
@@ -70,9 +71,8 @@ static void drawPaceBars(Canvas& c, int y, float elapsedFrac, float pct) {
 }
 
 void drawForecast(Canvas& c, int64_t now) {
-  struct Spec { const Window* w; const char* name; int64_t span; int y; };
-  const Spec specs[2] = {{&g_data.s, "Session", 5 * 3600, CARD1_Y},
-                         {&g_data.w, "Weekly", 7 * 86400, CARD2_Y}};
+  struct Spec { const Window* w; const char* name; bool session; int y; };
+  const Spec specs[2] = {{&g_data.s, "Session", true, CARD1_Y}, {&g_data.w, "Weekly", false, CARD2_Y}};
   for (const Spec& sp : specs) {
     const Window& w = *sp.w;
     int y = sp.y;
@@ -82,56 +82,49 @@ void drawForecast(Canvas& c, int64_t now) {
       c.text(F_SANS12, DIM, w.valid ? "Window has reset" : "No rate-limit data", 14, y + 62);
       continue;
     }
-    float el = constrain((now - (w.resetsAt - sp.span)) / (float)sp.span, 0.0f, 1.0f);
-    float hrs = el * sp.span / 3600.0f;
+    Forecast f = sp.session ? forecastSession(w, now) : forecastWeek(w, now);
     char m[32] = "", sub[48] = "", side[20] = "", d[24], clk[24];
     uint16_t col = IVORY;
 
-    if (sp.span == 5 * 3600) {
-      if (w.pct >= 100) {
+    switch (f.kind) {
+      case FC_LIMIT_REACHED:
         strcpy(m, "Limit reached");
         col = RED;
         fmtDur(w.resetsAt - now, d, sizeof d);
         snprintf(sub, sizeof sub, "resets in %s", d);
-      } else if (hrs < 0.1f || w.pct < 1) {
+        break;
+      case FC_TOO_EARLY:
         strcpy(m, "Too early to tell");
         col = DIM;
-        strcpy(sub, "needs a little more usage");
-      } else {
-        float rate = w.pct / hrs;  // % per hour
-        snprintf(side, sizeof side, "%.0f%% per hour", rate);
-        int64_t limitAt = now + (int64_t)((100 - w.pct) / rate * 3600);
-        if (limitAt < w.resetsAt) {
-          fmtReset(limitAt, now, clk, sizeof clk);
-          fmtDur(limitAt - now, d, sizeof d);
-          snprintf(m, sizeof m, "Limit ~ %s", clk);
-          snprintf(sub, sizeof sub, "in %s at this pace", d);
-          col = limitAt - now < 3600 ? RED : AMBER;
-        } else {
-          strcpy(m, "Safe until reset");
-          col = OLIVE;
-          snprintf(sub, sizeof sub, "projected %d%% by reset", (int)lroundf(w.pct / el));
-        }
-      }
-    } else {
-      if (el < 0.03f || w.pct < 1) {
-        strcpy(m, "Too early to tell");
-        col = DIM;
-        strcpy(sub, "needs more of the week");
-      } else {
-        float proj = w.pct / el;
-        col = proj >= 100 ? RED : (proj >= 85 ? AMBER : OLIVE);
-        snprintf(m, sizeof m, "Projected %d%%", (int)lroundf(proj));
-        float diff = w.pct - el * 100;
-        snprintf(sub, sizeof sub, "%d%% %s pace, %d%% of week gone", (int)lroundf(fabsf(diff)),
-                 diff > 0 ? "over" : "under", (int)lroundf(el * 100));
-        snprintf(side, sizeof side, "%.0f%% per day", w.pct / (el * 7));
-      }
+        strcpy(sub, sp.session ? "needs a little more usage" : "needs more of the week");
+        break;
+      case FC_LIMIT_SOON:
+        snprintf(side, sizeof side, "%.0f%% per hour", f.rate);
+        fmtReset(f.limitAt, now, clk, sizeof clk);
+        fmtDur(f.limitAt - now, d, sizeof d);
+        snprintf(m, sizeof m, "Limit ~ %s", clk);
+        snprintf(sub, sizeof sub, "in %s at this pace", d);
+        col = f.limitAt - now < 3600 ? RED : AMBER;
+        break;
+      case FC_SAFE:
+        snprintf(side, sizeof side, "%.0f%% per hour", f.rate);
+        strcpy(m, "Safe until reset");
+        col = OLIVE;
+        snprintf(sub, sizeof sub, "projected %d%% by reset", (int)lroundf(f.projected));
+        break;
+      case FC_PROJECTED:
+        col = f.projected >= 100 ? RED : (f.projected >= 85 ? AMBER : OLIVE);
+        snprintf(m, sizeof m, "Projected %d%%", (int)lroundf(f.projected));
+        snprintf(sub, sizeof sub, "%d%% %s pace, %d%% of week gone", (int)lroundf(fabsf(f.diff)),
+                 f.diff > 0 ? "over" : "under", (int)lroundf(f.elapsed * 100));
+        snprintf(side, sizeof side, "%.0f%% per day", f.rate);
+        break;
+      case FC_RESET: break;  // handled above
     }
     if (side[0]) c.text(F_SANS9, DIM, side, 306, y + 25, BR_DATUM);
     c.text(F_SANSB12, col, m, 14, y + 53);
     c.text(F_SANS9, DIM, sub, 14, y + 70);
-    drawPaceBars(c, y + 76, el, w.pct);
+    drawPaceBars(c, y + 76, f.elapsed, w.pct);
   }
 }
 

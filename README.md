@@ -106,6 +106,9 @@ or a monitored service down.
   between plug-ins; check `ls /dev/cu.usbserial*`.
 - Host: re-run `host/install.sh` after editing anything in `host/`.
 - Host tests: `python3 -m unittest discover -s host/tests`
+- Firmware tests (no board needed): `pio test -e native`. They cover frame parsing, formatting,
+  the forecast and scene maths, touch calibration and serial line assembly, built from the
+  display-free sources in `src/` with the small Arduino shim in `test/shim/`.
 
 ## Frame format (bridge -> CYD, one JSON line every ~5 s)
 `t, tz` (clock) - `age, s, w, m, c, cost, dur, la, lr` (Claude state; s/w = `{p, r}` percent and

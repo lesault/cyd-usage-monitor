@@ -2,6 +2,8 @@
 #pragma once
 #include <TFT_eSPI.h>
 
+#include "format.h"
+
 // ---- branding ---------------------------------------------------------------
 // Default build is neutral (cool teal on dark grey, gauge mark). Build the
 // `cyd-claude` environment (-DBRAND_CLAUDE=1) for the Claude-style look: warm
@@ -93,14 +95,8 @@ struct Canvas {
 };
 
 // UI settings/state shared with the pages (defined in ui.cpp).
-extern bool g_h24;        // 24-hour clock
 extern bool g_clockMode;  // show reset clock times instead of countdowns
 
 uint16_t levelColor(float pct);  // clay < 60, amber < 85, red above
 void drawMark(Canvas& c, int cx, int cy, float r, uint16_t col, uint16_t bg);  // brand mark
 void drawBar(Canvas& c, int x, int y, int w, int h, float pct, uint16_t col);
-
-void fmtDur(int64_t sec, char* b, size_t n);                    // 2h 14m
-void fmtAgo(uint32_t sec, char* b, size_t n);                   // 3m ago
-void fmtClock(int64_t epoch, bool withDay, char* b, size_t n);  // 14:07 / Fri 09:00
-void fmtReset(int64_t epoch, int64_t now, char* b, size_t n);   // weekday only if not today

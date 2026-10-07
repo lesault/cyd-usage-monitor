@@ -4,6 +4,8 @@
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
 
+#include "calmath.h"
+
 #define T_CLK 25
 #define T_MOSI 32
 #define T_MISO 39
@@ -28,10 +30,7 @@ void touchBegin() {
 }
 
 static void mapRaw(int rx, int ry, int& x, int& y) {
-  x = (int)lroundf(cal[0] * rx + cal[1] * ry + cal[2]);
-  y = (int)lroundf(cal[3] * rx + cal[4] * ry + cal[5]);
-  x = constrain(x, 0, 319);
-  y = constrain(y, 0, 239);
+  calMap(cal, rx, ry, x, y);
 }
 
 TouchResult touchPoll() {
@@ -90,17 +89,7 @@ void touchRawWait(int& rx, int& ry) {
 }
 
 bool touchSetCal(const int scr[3][2], const int raw[3][2]) {
-  double x1 = raw[0][0], y1 = raw[0][1], x2 = raw[1][0], y2 = raw[1][1], x3 = raw[2][0],
-         y3 = raw[2][1];
-  double det = x1 * (y2 - y3) - y1 * (x2 - x3) + (x2 * y3 - x3 * y2);
-  if (fabs(det) < 1.0) return false;
-  for (int axis = 0; axis < 2; axis++) {
-    double X1 = scr[0][axis], X2 = scr[1][axis], X3 = scr[2][axis];
-    cal[axis * 3 + 0] = (X1 * (y2 - y3) - y1 * (X2 - X3) + (X2 * y3 - X3 * y2)) / det;
-    cal[axis * 3 + 1] = (x1 * (X2 - X3) - X1 * (x2 - x3) + (x2 * X3 - x3 * X2)) / det;
-    cal[axis * 3 + 2] =
-        (x1 * (y2 * X3 - y3 * X2) - y1 * (x2 * X3 - x3 * X2) + X1 * (x2 * y3 - x3 * y2)) / det;
-  }
+  if (!calSolve(scr, raw, cal)) return false;
   calOk = true;
   return true;
 }

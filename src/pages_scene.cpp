@@ -5,10 +5,7 @@
 
 #include "model.h"
 #include "pages.h"
-
-static const int WL0 = 150;       // waterline with no melt
-static const int RISE_PX = 6;     // sea level rise at 100% weekly
-static const float MIN_ICE = 0.2f;  // iceberg never melts below this fraction
+#include "scene_math.h"
 
 static uint16_t mix(int r0, int g0, int b0, int r1, int g1, int b1, float t) {
   t = constrain(t, 0.0f, 1.0f);
@@ -37,21 +34,20 @@ static void drawBear(Canvas& c, int x, int y, float s) {
 }
 
 void drawScene(Canvas& c, int64_t now) {
-  const Window& sw = g_data.s;
   const Window& ww = g_data.w;
-  float sp = (sw.valid && sw.resetsAt > now) ? constrain(sw.pct, 0, 100) / 100.0f : 0.0f;
-  float wp = (ww.valid && ww.resetsAt > now) ? constrain(ww.pct, 0, 100) / 100.0f : 0.0f;
-  float k = 1.0f - (1.0f - MIN_ICE) * wp;  // iceberg scale
-  int wl = WL0 - (int)lroundf(RISE_PX * wp);
+  float sp = sceneProgress(g_data.s, now);
+  float wp = sceneProgress(ww, now);
+  float k = sceneIceScale(wp);
+  int wl = sceneWaterline(wp);
   uint32_t step = c.ms / 250;
 
   // Sky.
-  float dusk = constrain((sp - 0.4f) / 0.6f, 0.0f, 1.0f);
+  float dusk = sceneDusk(sp);
   for (int y = 0; y < wl; y += 6) c.rect(0, y, 320, min(6, wl - y), skyAt(y, wl, dusk));
 
   // Sun: rises from the left horizon, peaks at 50%, sets into the sea at the limit.
-  int sx = 36 + (int)lroundf(248 * sp);
-  int sy = wl - 6 - (int)lroundf(sinf(M_PI * sp) * 96);
+  SunPos sunAt = sceneSun(sp, wl);
+  int sx = sunAt.x, sy = sunAt.y;
   uint16_t sun = mix(255, 222, 96, 255, 90, 50, dusk);
   c.circle(sx, sy, 22, mix(200, 225, 235, 235, 150, 105, dusk));  // soft halo
   c.circle(sx, sy, 19, mix(250, 235, 170, 255, 125, 75, dusk));
