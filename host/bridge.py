@@ -5,6 +5,10 @@ Reads ~/.claude-cyd/state.json (written by statusline.py), samples the Mac, and
 sends one JSON line every few seconds. The bridge makes the decisions (idle,
 night, alerts); the firmware just renders. Reconnects when the cable is
 unplugged. See README for the frame format.
+
+Before sending anything the bridge checks that the port really is a CYD: it sends
+{"probe":1} and waits for {"cyd":1}. Frames (usage, cost, uptime...) are never written
+to a device that doesn't answer. `--no-handshake` skips this for firmware that predates it.
 """
 import argparse
 import glob
@@ -20,16 +24,80 @@ import cydconfig
 import rules
 import sysstats
 
+HANDSHAKE_S = 8.0   # the boot splash can keep a freshly reset board busy for a few seconds
+PROBE_EVERY_S = 0.5
+REJECT_S = 15.0     # how long to leave a port that didn't answer alone
 STATE = os.path.expanduser("~/.claude-cyd/state.json")
 LOG = os.path.expanduser("~/.claude-cyd/bridge.log")
 CONFIG_RELOAD_S = 30
 
 
-def find_port(explicit):
+def find_ports(explicit):
     if explicit:
-        return explicit
-    ports = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/cu.wchusbserial*"))
-    return ports[0] if ports else None
+        return [explicit]
+    return sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/cu.wchusbserial*"))
+
+
+def is_hello(line):
+    """True for the firmware's {"cyd":1}, even with boot noise stuck to the front of the line."""
+    try:
+        return json.loads(line[max(line.find("{"), 0):]).get("cyd") == 1
+    except (ValueError, AttributeError):
+        return False
+
+
+def handshake(ser, timeout=HANDSHAKE_S, clock=time.monotonic, sleep=time.sleep):
+    """True once the device on ser answers {"probe":1} with {"cyd":1}.
+
+    Only the probe is ever written. Anything else the device sends (boot noise, an echo
+    of our own probe from a loopback adapter) is ignored.
+    """
+    deadline = clock() + timeout
+    next_probe, buf = 0.0, b""
+    while clock() < deadline:
+        if clock() >= next_probe:
+            ser.write(b'{"probe":1}\n')
+            next_probe = clock() + PROBE_EVERY_S
+        buf += ser.read(512) or b""
+        *lines, buf = buf.split(b"\n")
+        buf = buf[-512:]  # a device spewing newline-free noise can't grow this forever
+        for line in lines:
+            if is_hello(line.decode(errors="replace")):
+                return True
+        sleep(0.05)
+    return False
+
+
+def connect(explicit, rejected, check=True, clock=time.time):
+    """Open the first port that is (or, with check=False, might be) a CYD.
+
+    rejected maps port -> time before which it is left alone; entries for ports that have
+    gone away are dropped so a re-plug is tried at once.
+    """
+    ports = find_ports(explicit)
+    for gone in set(rejected) - set(ports):
+        del rejected[gone]
+    for path in ports:
+        if rejected.get(path, 0) > clock():
+            continue
+        first = path not in rejected
+        ser = None
+        try:
+            ser = open_port(path)
+            if not check or handshake(ser):
+                return ser, path
+            why = "did not answer the handshake"
+        except (serial.SerialException, OSError) as e:
+            why = "cannot talk to it (%s)" % e
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        rejected[path] = clock() + REJECT_S
+        if first:  # say it once, not every retry
+            print("ignoring %s: %s" % (path, why), flush=True)
+    return None, None
 
 
 def load_state():
@@ -84,6 +152,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port")
     ap.add_argument("--interval", type=float, default=5.0)
+    ap.add_argument("--no-handshake", action="store_true",
+                    help="send to the port without checking it is a CYD (old firmware)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -96,15 +166,14 @@ def main():
     sampler, act = sysstats.Sampler(), activity.Activity()
     last_prune_day = None
     last_err = last_serial_err = None
-    ser = None
+    ser, rejected = None, {}
     while True:
         try:
             if ser is None:
-                path = find_port(args.port)
-                if not path:
+                ser, path = connect(args.port, rejected, check=not args.no_handshake)
+                if ser is None:
                     time.sleep(2)
                     continue
-                ser = open_port(path)
                 print("connected:", path, flush=True)
                 last_serial_err = None
 

@@ -27,7 +27,13 @@ static void readWindow(JsonVariantConst v, Window& w) {
 
 bool parseFrame(const char* line) {
   JsonDocument doc;
-  if (deserializeJson(doc, line) || doc["t"].isNull()) return false;
+  if (deserializeJson(doc, line)) return false;
+  // Handshake: the bridge only sends data to a port that answers its probe like this.
+  if (!doc["probe"].isNull()) {
+    Serial.println("{\"cyd\":1}");
+    return false;
+  }
+  if (doc["t"].isNull()) return false;
 
   g_data.epochBase = (int64_t)doc["t"].as<double>();
   g_data.epochMillis = millis();

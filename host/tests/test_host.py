@@ -16,6 +16,8 @@ for _name in ("serial", "psutil"):
         __import__(_name)
     except ImportError:
         sys.modules[_name] = types.ModuleType(_name)
+if not hasattr(sys.modules["serial"], "SerialException"):
+    sys.modules["serial"].SerialException = type("SerialException", (OSError,), {})
 
 import activity  # noqa: E402
 import bridge  # noqa: E402
@@ -702,6 +704,168 @@ class InstallHelperTests(unittest.TestCase):
         pins = [l for l in text.splitlines() if "==" in l]
         self.assertEqual(len(pins), 2)
         self.assertGreaterEqual(text.count("--hash=sha256:"), 2)
+
+
+class FakeClock:
+    """Time that only moves when the code sleeps, so handshake timeouts run instantly."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+class FakeDevice:
+    """A serial port stand-in: reply(probe_count) returns the bytes to deliver after each probe."""
+
+    def __init__(self, clock, reply=None, chunk=None):
+        self.clock, self.reply, self.chunk = clock, reply, chunk
+        self.written, self.pending, self.closed = [], b"", False
+
+    def write(self, data):
+        self.written.append(data)
+        if self.reply:
+            self.pending += self.reply(len(self.written))
+
+    def read(self, n):
+        n = self.chunk or n
+        out, self.pending = self.pending[:n], self.pending[n:]
+        return out
+
+    def close(self):
+        self.closed = True
+
+
+HELLO = b'{"cyd":1}\n'
+
+
+class HandshakeTests(unittest.TestCase):
+    def run_hs(self, reply, **kw):
+        clock = FakeClock()
+        dev = FakeDevice(clock, reply, **kw)
+        ok = bridge.handshake(dev, timeout=8.0, clock=clock, sleep=clock.sleep)
+        return ok, dev, clock
+
+    def test_answering_device_is_accepted_and_only_probed(self):
+        ok, dev, _ = self.run_hs(lambda n: HELLO)
+        self.assertTrue(ok)
+        self.assertEqual(dev.written, [b'{"probe":1}\n'])
+
+    def test_slow_boot_is_waited_for(self):
+        ok, dev, clock = self.run_hs(lambda n: HELLO if n >= 6 else b"")  # ~3 s of probes
+        self.assertTrue(ok)
+        self.assertGreater(len(dev.written), 5)
+        self.assertLess(clock.t - 1000.0, 8.0)
+
+    def test_silent_device_times_out_and_gets_nothing_but_probes(self):
+        ok, dev, clock = self.run_hs(None)
+        self.assertFalse(ok)
+        self.assertTrue(all(w == b'{"probe":1}\n' for w in dev.written))
+        self.assertGreaterEqual(clock.t - 1000.0, 8.0)
+        self.assertLess(len(dev.written), 40)  # probes are paced, not a flood
+
+    def test_echo_device_is_rejected(self):
+        ok, _, _ = self.run_hs(lambda n: b'{"probe":1}\n')   # loopback adapter
+        self.assertFalse(ok)
+
+    def test_noise_and_wrong_answers_are_rejected(self):
+        for noise in (b"\xff\xfe boot garbage\n", b'{"cyd":2}\n', b'{"cyd":"1"}\n', b"[1]\n", b"null\n",
+                      b'{"hello":"world"}\n'):
+            ok, _, _ = self.run_hs(lambda n, x=noise: x)
+            self.assertFalse(ok, noise)
+
+    def test_hello_after_noise_and_split_across_reads(self):
+        ok, _, _ = self.run_hs(lambda n: b"junk\r\n\x00\x01" + HELLO, chunk=3)
+        self.assertTrue(ok)
+
+    def test_endless_noise_without_newlines_is_bounded(self):
+        ok, dev, _ = self.run_hs(lambda n: b"x" * 4000)
+        self.assertFalse(ok)
+
+
+class ConnectTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        import io
+        self._quiet = contextlib.redirect_stdout(io.StringIO())  # connect() reports rejections
+        self._quiet.__enter__()
+        self.devs, self.opened = {}, []
+        self.clock = FakeClock()
+        self._open, self._find, self._hs = bridge.open_port, bridge.find_ports, bridge.handshake
+        bridge.open_port = self.fake_open
+        bridge.find_ports = lambda explicit: list(self.devs)
+        bridge.handshake = lambda ser, **kw: self._hs(ser, timeout=8.0, clock=self.clock,
+                                                       sleep=self.clock.sleep)
+
+    def tearDown(self):
+        self._quiet.__exit__(None, None, None)
+        bridge.open_port, bridge.find_ports, bridge.handshake = self._open, self._find, self._hs
+
+    def fake_open(self, path):
+        self.opened.append(path)
+        dev = self.devs[path]
+        if isinstance(dev, Exception):
+            raise dev
+        return dev
+
+    def test_skips_a_non_cyd_port_and_uses_the_next(self):
+        other = FakeDevice(self.clock, None)
+        cyd = FakeDevice(self.clock, lambda n: HELLO)
+        self.devs = {"/dev/cu.usbserial-1": other, "/dev/cu.usbserial-2": cyd}
+        rejected = {}
+        ser, path = bridge.connect(None, rejected, clock=self.clock)
+        self.assertEqual((ser, path), (cyd, "/dev/cu.usbserial-2"))
+        self.assertTrue(other.closed)
+        self.assertTrue(all(w == b'{"probe":1}\n' for w in other.written))  # it saw no data
+        self.assertIn("/dev/cu.usbserial-1", rejected)
+
+    def test_rejected_port_is_left_alone_then_retried(self):
+        other = FakeDevice(self.clock, None)
+        self.devs = {"/dev/cu.usbserial-1": other}
+        rejected = {}
+        self.assertEqual(bridge.connect(None, rejected, clock=self.clock), (None, None))
+        n = len(self.opened)
+        self.assertEqual(bridge.connect(None, rejected, clock=self.clock), (None, None))
+        self.assertEqual(len(self.opened), n)                 # backoff: not even opened
+        self.clock.t += bridge.REJECT_S + 1
+        bridge.connect(None, rejected, clock=self.clock)
+        self.assertEqual(len(self.opened), n + 1)             # retried after the backoff
+
+    def test_replugged_port_is_tried_immediately(self):
+        self.devs = {"/dev/cu.usbserial-1": FakeDevice(self.clock, None)}
+        rejected = {}
+        bridge.connect(None, rejected, clock=self.clock)
+        self.devs = {}
+        bridge.connect(None, rejected, clock=self.clock)       # unplugged: forgotten
+        self.assertEqual(rejected, {})
+        cyd = FakeDevice(self.clock, lambda n: HELLO)
+        self.devs = {"/dev/cu.usbserial-1": cyd}
+        self.assertEqual(bridge.connect(None, rejected, clock=self.clock)[0], cyd)
+
+    def test_open_failure_does_not_block_other_ports(self):
+        cyd = FakeDevice(self.clock, lambda n: HELLO)
+        self.devs = {"/dev/cu.usbserial-1": OSError("busy"), "/dev/cu.usbserial-2": cyd}
+        self.assertEqual(bridge.connect(None, {}, clock=self.clock)[0], cyd)
+
+    def test_write_error_during_handshake_closes_the_port(self):
+        class Broken(FakeDevice):
+            def write(self, data):
+                raise OSError("device vanished")
+
+        dev = Broken(self.clock)
+        self.devs = {"/dev/cu.usbserial-1": dev}
+        self.assertEqual(bridge.connect(None, {}, clock=self.clock), (None, None))
+        self.assertTrue(dev.closed)
+
+    def test_no_handshake_flag_trusts_the_port(self):
+        dev = FakeDevice(self.clock, None)
+        self.devs = {"/dev/cu.usbserial-1": dev}
+        self.assertEqual(bridge.connect(None, {}, check=False, clock=self.clock)[0], dev)
+        self.assertEqual(dev.written, [])
 
 
 if __name__ == "__main__":

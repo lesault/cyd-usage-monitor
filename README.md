@@ -112,6 +112,13 @@ or a monitored service down.
 reset epoch) - `auto, night` (flags) - `al` (alert codes `sess|week|disk|svc`) -
 `sys` (`cpu, mem, disk, free, up, rx, tx, svc[], svn[]`) - `act` (`today, n, last, days[7]`).
 
+## Handshake
+The bridge only sends data to a port that proves it is the CYD. On connecting it writes
+`{"probe":1}` and waits up to 8 s for the firmware's `{"cyd":1}`; a port that doesn't answer
+is left alone for 15 s (logged once) and the next one is tried. So a second USB-serial
+adapter never receives your usage. Firmware flashed before this was added doesn't answer:
+reflash it, or run the bridge with `--no-handshake`.
+
 ## Notes
 - Claude data only changes on API responses; "Live" means the feed is alive, not that the
   figures are up to the second. A lower weekly/session reading within the same window is a
