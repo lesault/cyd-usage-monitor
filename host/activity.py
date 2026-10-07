@@ -53,9 +53,9 @@ def load(path=HISTORY):
             for line in f:
                 try:
                     r = json.loads(line)
-                    int(r["ts"])
+                    r["ts"] = int(r["ts"])
                     rows.append(r)
-                except (ValueError, KeyError, TypeError):
+                except (ValueError, KeyError, TypeError, OverflowError):
                     continue
     except OSError:
         pass
@@ -222,9 +222,9 @@ class Activity:
                 for line in chunk[:end].decode(errors="replace").splitlines():
                     try:
                         r = json.loads(line)
-                        int(r["ts"])
+                        r["ts"] = int(r["ts"])
                         new.append(r)
-                    except (ValueError, KeyError, TypeError):
+                    except (ValueError, KeyError, TypeError, OverflowError):
                         continue
                 self._pos += end
                 if new:

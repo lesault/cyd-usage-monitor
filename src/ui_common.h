@@ -51,7 +51,8 @@ static const uint16_t OLIVE = C565(138, 166, 106);
 // Draws into a horizontal band of the screen (the sprite is half the screen high).
 struct Canvas {
   TFT_eSprite& s;
-  int dy;  // screen y of the band's first row
+  int dy;       // screen y of the band's first row
+  uint32_t ms;  // millis() for this frame, so both bands animate from the same instant
   void rect(int x, int y, int w, int h, uint16_t c) { s.fillRect(x, y - dy, w, h, c); }
   void rrect(int x, int y, int w, int h, int r, uint16_t c) {
     s.fillRoundRect(x, y - dy, w, h, r, c);

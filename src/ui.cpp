@@ -75,12 +75,6 @@ static void savePrefs() {
 void uiMarkDirty() { dirty = true; }
 
 // ---- alerts ----------------------------------------------------------------
-static int bitIndex(uint8_t bit) {
-  int i = 0;
-  while (bit > 1) { bit >>= 1; i++; }
-  return i;
-}
-
 // Raised by the bridge, link is up, and not snoozed.
 static uint8_t activeAlerts() {
   if (!linkAlive()) return 0;
@@ -122,10 +116,10 @@ static void drawHeader(Canvas& c) {
   c.circle(312 - w - 10, 11, 4, dot);
 }
 
-static void drawNav(Canvas& c) {
+static void drawNav(Canvas& c, int64_t now) {
   char b[24];
   if (page != P_CLOCK) {  // the clock page already shows the time
-    if (g_data.haveTime) fmtClock(nowEpoch(), false, b, sizeof b);
+    if (g_data.haveTime) fmtClock(now, false, b, sizeof b);
     else strcpy(b, "--:--");
     c.text(F_SANS9, DIM, b, 12, 237);
   }
@@ -195,7 +189,8 @@ static void drawSettings(Canvas& c) {
 }
 
 // ---- render ----------------------------------------------------------------
-static void drawPage(Canvas& c) {
+// now: the epoch second for this frame (0 until the first frame arrives).
+static void drawPage(Canvas& c, int64_t now) {
   uint8_t alerts = activeAlerts();
   if (alerts && page != P_SETTINGS) {
     int top = 0;
@@ -206,7 +201,7 @@ static void drawPage(Canvas& c) {
       }
     }
     int extra = __builtin_popcount(alerts) - 1;
-    drawAlert(c, top, extra, nowEpoch());
+    drawAlert(c, top, extra, now);
     return;
   }
   if (page == P_SETTINGS) {
@@ -214,14 +209,13 @@ static void drawPage(Canvas& c) {
     return;
   }
   if (page == P_SCENE) {
-    drawScene(c, g_data.haveTime ? nowEpoch() : 0);
+    drawScene(c, now);
     return;
   }
   drawHeader(c);
   if (!g_data.haveTime) {
     drawNoLink(c);
   } else {
-    int64_t now = nowEpoch();
     switch (page) {
       case P_HOME: drawHome(c, now); break;
       case P_FORECAST: drawForecast(c, now); break;
@@ -231,15 +225,17 @@ static void drawPage(Canvas& c) {
       default: drawClock(c, now); break;
     }
   }
-  drawNav(c);
+  drawNav(c, now);
 }
 
 static void render() {
   if (!spriteOk) return;
+  uint32_t ms = millis();  // one reading per frame: both bands must show the same instant
+  int64_t now = g_data.haveTime ? nowEpoch() : 0;
   for (int band = 0; band < 2; band++) {
-    Canvas c{spr, band * 120};
+    Canvas c{spr, band * 120, ms};
     spr.fillSprite(BG);
-    drawPage(c);
+    drawPage(c, now);
     spr.pushSprite(0, band * 120);
   }
 }
@@ -329,7 +325,7 @@ void uiHandleTouch(const TouchResult& t) {
 static void showUnofficialSplash() {
   if (!spriteOk) return;
   for (int band = 0; band < 2; band++) {
-    Canvas c{spr, band * 120};
+    Canvas c{spr, band * 120, millis()};
     spr.fillSprite(BG);
     drawMark(c, 160, 66, 30, ACCENT, BG);
     c.text(F_BRAND, IVORY, "Claude usage monitor", 160, 128, BC_DATUM);
@@ -377,7 +373,7 @@ void uiTick() {
 
   // Backlight: dim after idle time or at night, but never during alerts or settings.
   bool idleDim = DIM_MIN[dimIdx] && now - lastTouch > DIM_MIN[dimIdx] * 60000UL;
-  bool nightDim = g_data.night && (int32_t)(now - wakeUntil) >= 0;
+  bool nightDim = g_data.night && linkAlive() && (int32_t)(now - wakeUntil) >= 0;
   bool shouldDim = page != P_SETTINGS && !alerts && (idleDim || nightDim);
   if (shouldDim != dimmed) {
     dimmed = shouldDim;

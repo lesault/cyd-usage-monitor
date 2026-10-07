@@ -537,5 +537,117 @@ class SamplerTests(unittest.TestCase):
         self.assertEqual(s.snapshot(["a", "bad"])["svc"], [1, 0])
 
 
+class StatuslineNormaliseTests(unittest.TestCase):
+    NOW = 1_700_000_000
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.old = statusline.DIR
+        statusline.DIR = self.d.name
+
+    def tearDown(self):
+        statusline.DIR = self.old
+        self.d.cleanup()
+
+    def payload(self, s=(40, 5000), w=(10, 90000), **extra):
+        raw = {"model": {"display_name": "Sonnet 5.5"},
+               "cost": {"total_cost_usd": 1.5, "total_duration_ms": 90000,
+                        "total_lines_added": 3, "total_lines_removed": 1},
+               "context_window": {"used_percentage": 22}, "rate_limits": {}}
+        if s:
+            raw["rate_limits"]["five_hour"] = {"used_percentage": s[0], "resets_at": self.NOW + s[1]}
+        if w:
+            raw["rate_limits"]["seven_day"] = {"used_percentage": w[0], "resets_at": self.NOW + w[1]}
+        raw.update(extra)
+        return raw
+
+    def test_normal_payload(self):
+        st = statusline.normalise(self.payload(), {}, self.NOW)
+        self.assertEqual(st["s"], {"p": 40.0, "r": self.NOW + 5000})
+        self.assertEqual((st["m"], st["c"], st["cost"], st["dur"], st["la"], st["lr"]),
+                         ("Sonnet 5.5", 22, 1.5, 90, 3, 1))
+        self.assertEqual(statusline.summary_line(st), "Sonnet 5.5 | 5h 40% | 7d 10%")
+
+    def test_non_numeric_values_are_dropped_not_fatal(self):
+        raw = self.payload()
+        raw["rate_limits"]["five_hour"]["used_percentage"] = "lots"
+        raw["rate_limits"]["seven_day"]["resets_at"] = "soon"
+        raw["cost"] = {"total_cost_usd": "free", "total_duration_ms": "long",
+                       "total_lines_added": None, "total_lines_removed": True}
+        raw["model"] = {"display_name": 7}
+        st = statusline.normalise(raw, {}, self.NOW)
+        self.assertIsNone(st["s"])
+        self.assertIsNone(st["w"])
+        self.assertEqual((st["m"], st["cost"], st["dur"], st["la"], st["lr"]), ("", None, 0, None, None))
+        self.assertEqual(statusline.summary_line(st), "claude")
+
+    def test_corrupt_previous_state_is_ignored(self):
+        for prev in ([1], "x", {"s": 5}, {"s": {"p": "a", "r": None}}, {"s": {"p": 1}}):
+            raw = self.payload(s=None)  # window missing -> would reuse prev if it were valid
+            st = statusline.normalise(raw, prev, self.NOW)
+            self.assertIsNone(st["s"], prev)
+
+    def test_missing_window_keeps_the_old_one_until_it_resets(self):
+        prev = {"s": {"p": 60.0, "r": self.NOW + 100}}
+        self.assertEqual(statusline.normalise(self.payload(s=None), prev, self.NOW)["s"], prev["s"])
+        self.assertIsNone(statusline.normalise(self.payload(s=None), prev, self.NOW + 200)["s"])
+
+    def test_lower_reading_in_the_same_window_is_a_stale_session(self):
+        prev = {"s": {"p": 70.0, "r": self.NOW + 5000}}
+        st = statusline.normalise(self.payload(s=(65, 5000)), prev, self.NOW)
+        self.assertEqual(st["s"]["p"], 70.0)
+        with open(os.path.join(self.d.name, "regress.log")) as f:
+            self.assertIn("kept=70.0", f.read())
+        # a new window (different reset time) is trusted even when lower
+        self.assertEqual(statusline.normalise(self.payload(s=(5, 99999)), prev, self.NOW)["s"]["p"], 5.0)
+
+    def test_main_ignores_input_that_is_not_an_object(self):
+        import io
+        from contextlib import redirect_stdout
+        old_in = sys.stdin
+        try:
+            for text in ("[1, 2]", "null", "7", "{oops", ""):
+                sys.stdin = io.StringIO(text)
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    statusline.main()
+                self.assertEqual(out.getvalue().strip(), "claude", text)
+            self.assertFalse(os.path.exists(os.path.join(self.d.name, "state.json")))
+        finally:
+            sys.stdin = old_in
+
+    def test_main_writes_state_and_history(self):
+        import io
+        from contextlib import redirect_stdout
+        old_in = sys.stdin
+        try:
+            sys.stdin = io.StringIO(json.dumps(dict(self.payload(), session_id="abcdef123456")))
+            out = io.StringIO()
+            with redirect_stdout(out):
+                statusline.main()
+        finally:
+            sys.stdin = old_in
+        self.assertIn("Sonnet 5.5", out.getvalue())
+        with open(os.path.join(self.d.name, "state.json")) as f:
+            self.assertEqual(json.load(f)["cost"], 1.5)
+        rows = activity.load(os.path.join(self.d.name, "history.jsonl"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sid"], "abcdef12")
+
+
+class HistoryLoadTests(unittest.TestCase):
+    def test_string_and_infinite_timestamps(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "h.jsonl")
+            with open(p, "w") as f:
+                f.write('{"ts": "123", "sid": "a"}\n')       # numeric string: coerced
+                f.write('{"ts": Infinity, "sid": "a"}\n')    # json.loads accepts this; skip it
+                f.write('{"ts": 150, "sid": "a"}\n')
+                f.write("[1, 2]\n")
+            self.assertEqual([r["ts"] for r in activity.load(p)], [123, 150])
+            a = activity.Activity(p)
+            self.assertEqual([r["ts"] for r in a.rows()], [123, 150])
+
+
 if __name__ == "__main__":
     unittest.main()

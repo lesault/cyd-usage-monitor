@@ -76,7 +76,10 @@ def main():
     ap.add_argument("scenario", choices=SCENARIOS)
     ap.add_argument("--port")
     a = ap.parse_args()
-    port = a.port or sorted(glob.glob("/dev/cu.usbserial-*"))[0]
+    ports = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/cu.wchusbserial*"))
+    port = a.port or (ports[0] if ports else None)
+    if not port:
+        raise SystemExit("no CYD found (looked for /dev/cu.usbserial-*); pass --port")
     ser = serial.Serial()
     ser.port, ser.baudrate, ser.timeout = port, 115200, 0
     ser.dtr = ser.rts = False

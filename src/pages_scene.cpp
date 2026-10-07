@@ -31,7 +31,7 @@ static void drawBear(Canvas& c, int x, int y, float s) {
   c.ellipse(x, y - n(9), n(13), n(7), FUR);       // body
   c.circle(x - n(14), y - n(14), n(5), FUR);       // head
   c.ellipse(x - n(19), y - n(12), n(3), n(2), FUR);  // snout
-  c.circle(x - n(12), y - n(19), max(1, n(2)), FUR);  // ear
+  c.circle(x - n(12), y - n(19), n(2), FUR);  // ear
   c.circle(x - n(21), y - n(13), 1, DARK);            // nose
   c.circle(x - n(16), y - n(15), 1, DARK);            // eye
 }
@@ -43,7 +43,7 @@ void drawScene(Canvas& c, int64_t now) {
   float wp = (ww.valid && ww.resetsAt > now) ? constrain(ww.pct, 0, 100) / 100.0f : 0.0f;
   float k = 1.0f - (1.0f - MIN_ICE) * wp;  // iceberg scale
   int wl = WL0 - (int)lroundf(RISE_PX * wp);
-  uint32_t step = millis() / 250;           // quantised so both screen bands agree
+  uint32_t step = c.ms / 250;
 
   // Sky.
   float dusk = constrain((sp - 0.4f) / 0.6f, 0.0f, 1.0f);

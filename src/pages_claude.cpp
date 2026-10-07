@@ -22,7 +22,7 @@ static void drawCard(Canvas& c, int y, const char* label, const char* sub, const
   float pct = expired ? 0 : w.pct;
   uint16_t col = levelColor(pct);
 
-  if (pct >= 95 && (millis() / 500) % 2) c.outline(4, y, 312, CARD_H, 10, RED);
+  if (pct >= 95 && (c.ms / 500) % 2) c.outline(4, y, 312, CARD_H, 10, RED);
 
   char num[8];
   snprintf(num, sizeof num, "%d", (int)lroundf(pct));
